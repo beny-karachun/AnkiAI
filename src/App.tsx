@@ -1,0 +1,142 @@
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Layers,
+  Plus,
+  Search,
+  BarChart3,
+  Settings as SettingsIcon,
+  GraduationCap,
+} from 'lucide-react';
+import { getSettings } from './db';
+import type { Settings } from './types';
+import { DEFAULT_MODEL } from './lib/gemini';
+import { DecksView } from './components/DecksView';
+import { StudyView } from './components/StudyView';
+import { AddNoteView } from './components/AddNoteView';
+import { BrowserView } from './components/BrowserView';
+import { StatsView } from './components/StatsView';
+import { SettingsView } from './components/SettingsView';
+import './app.css';
+
+type View =
+  | { name: 'decks' }
+  | { name: 'study'; deckId: string }
+  | { name: 'add' }
+  | { name: 'browse' }
+  | { name: 'stats' }
+  | { name: 'settings' };
+
+const NAV: {
+  view: Exclude<View['name'], 'study'>;
+  label: string;
+  icon: React.ComponentType<{ size?: number }>;
+}[] = [
+  { view: 'decks', label: 'Decks', icon: Layers },
+  { view: 'add', label: 'Add', icon: Plus },
+  { view: 'browse', label: 'Browse', icon: Search },
+  { view: 'stats', label: 'Stats', icon: BarChart3 },
+  { view: 'settings', label: 'Settings', icon: SettingsIcon },
+];
+
+export default function App() {
+  const [view, setView] = useState<View>({ name: 'decks' });
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [lastDeckId, setLastDeckId] = useState<string>('');
+
+  const reloadSettings = useCallback(async () => {
+    const s = await getSettings();
+    if (!s.model) s.model = DEFAULT_MODEL;
+    setSettings(s);
+  }, []);
+
+  useEffect(() => {
+    void reloadSettings();
+  }, [reloadSettings]);
+
+  // Theme: follow the setting, tracking the OS when set to "system"
+  useEffect(() => {
+    if (!settings) return;
+    const apply = () => {
+      const dark =
+        settings.theme === 'dark' ||
+        (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    };
+    apply();
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [settings]);
+
+  const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  // Stable identity: StudyView's queue-building effect depends on this — an
+  // inline arrow would silently rebuild the study queue on every re-render.
+  const exitStudy = useCallback(() => setView({ name: 'decks' }), []);
+
+  if (!settings) {
+    return (
+      <div className="app-loading">
+        <GraduationCap size={32} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark">
+            <GraduationCap size={20} />
+          </span>
+          <span className="brand-name">AnkiAI</span>
+        </div>
+        <nav aria-label="Main navigation">
+          {NAV.map(({ view: v, label, icon: Icon }) => (
+            <button
+              key={v}
+              className={`nav-item ${view.name === v || (v === 'decks' && view.name === 'study') ? 'nav-active' : ''}`}
+              onClick={() => setView({ name: v } as View)}
+              aria-current={view.name === v ? 'page' : undefined}
+            >
+              <Icon size={18} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-foot tooltip-hint">All data stays in this browser.</div>
+      </aside>
+
+      <main className="main-area">
+        {view.name === 'decks' && (
+          <DecksView
+            onStudy={(deckId) => {
+              setLastDeckId(deckId);
+              setView({ name: 'study', deckId });
+            }}
+            dayStartHour={settings.dayStartHour}
+            refreshKey={refreshKey}
+          />
+        )}
+        {view.name === 'study' && (
+          <StudyView
+            deckId={view.deckId}
+            settings={settings}
+            onExit={exitStudy}
+            onChanged={bumpRefresh}
+          />
+        )}
+        {view.name === 'add' && (
+          <AddNoteView defaultDeckId={lastDeckId} onDeckUsed={setLastDeckId} onAdded={bumpRefresh} />
+        )}
+        {view.name === 'browse' && (
+          <BrowserView initialQuery="" dayStartHour={settings.dayStartHour} onChanged={bumpRefresh} />
+        )}
+        {view.name === 'stats' && <StatsView dayStartHour={settings.dayStartHour} />}
+        {view.name === 'settings' && (
+          <SettingsView settings={settings} onSettingsChanged={() => void reloadSettings()} />
+        )}
+      </main>
+    </div>
+  );
+}
