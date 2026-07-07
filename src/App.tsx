@@ -20,7 +20,7 @@ import './app.css';
 
 type View =
   | { name: 'decks' }
-  | { name: 'study'; deckId: string }
+  | { name: 'study'; deckId: string | null } // null = whole collection
   | { name: 'add' }
   | { name: 'browse' }
   | { name: 'stats' }
@@ -45,6 +45,8 @@ export default function App() {
   const [lastDeckId, setLastDeckId] = useState<string>('');
   /** current folder open on the Decks desktop (null = Home) */
   const [deckFolderId, setDeckFolderId] = useState<string | null>(null);
+  /** folder the user came from via "Add note here" — shows a Go-back button in the Add view */
+  const [addOrigin, setAddOrigin] = useState<string | null>(null);
 
   const reloadSettings = useCallback(async () => {
     const s = await getSettings();
@@ -102,7 +104,10 @@ export default function App() {
             <button
               key={v}
               className={`nav-item ${view.name === v || (v === 'decks' && view.name === 'study') ? 'nav-active' : ''}`}
-              onClick={() => setView({ name: v } as View)}
+              onClick={() => {
+                if (v === 'add') setAddOrigin(null); // generic entry: no folder to go back to
+                setView({ name: v } as View);
+              }}
               aria-current={view.name === v ? 'page' : undefined}
             >
               <Icon size={18} />
@@ -117,11 +122,12 @@ export default function App() {
         {view.name === 'decks' && (
           <DecksView
             onStudy={(deckId) => {
-              setLastDeckId(deckId);
+              if (deckId !== null) setLastDeckId(deckId);
               setView({ name: 'study', deckId });
             }}
             onAddHere={(deckId) => {
               setLastDeckId(deckId);
+              setAddOrigin(deckId);
               setView({ name: 'add' });
             }}
             settings={settings}
@@ -140,7 +146,16 @@ export default function App() {
           />
         )}
         {view.name === 'add' && (
-          <AddNoteView defaultDeckId={lastDeckId} onDeckUsed={setLastDeckId} onAdded={bumpRefresh} />
+          <AddNoteView
+            defaultDeckId={lastDeckId}
+            onDeckUsed={setLastDeckId}
+            onAdded={bumpRefresh}
+            originDeckId={addOrigin}
+            onBack={(deckId) => {
+              setDeckFolderId(deckId);
+              setView({ name: 'decks' });
+            }}
+          />
         )}
         {view.name === 'browse' && (
           <BrowserView initialQuery="" dayStartHour={settings.dayStartHour} onChanged={bumpRefresh} />

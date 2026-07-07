@@ -534,6 +534,93 @@ try {
   else fail('mathjax money', mathA.slice(0, 120));
   await page.screenshot({ path: `${SHOT_DIR}/study-math.png` });
 
+  // 26. Note tiles render TeX in their names
+  await clickByText(page, '.nav-item', 'Decks');
+  await sleep(400);
+  await page.waitForSelector('.note-tile .tile-name mjx-container svg', { timeout: 10000 });
+  ok('note tile name renders TeX as MathJax');
+  await page.screenshot({ path: `${SHOT_DIR}/tiles-math.png` });
+
+  // 27. Right-click "Add note here" → Go back button returns to that folder
+  await page.evaluate(() => {
+    const surface = document.querySelector('.desk-surface');
+    const r = surface.getBoundingClientRect();
+    surface.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.right - 40, clientY: r.bottom - 40 }),
+    );
+  });
+  await page.waitForSelector('.ctx-menu');
+  await clickByText(page, '.ctx-menu button', 'Add note here');
+  await page.waitForSelector('.add-view');
+  await waitForText(page, 'Back to MathLab');
+  ok('Add view shows "Back to MathLab" after right-click add');
+  await clickByText(page, '.add-back-btn', 'Back to MathLab');
+  await sleep(300);
+  const crumbCur = await page.$eval('.crumb-current', (e) => e.textContent);
+  if (crumbCur.includes('MathLab')) ok('Go back returns into the MathLab folder');
+  else fail('go back', crumbCur);
+
+  // 28. Home Study button studies the whole collection
+  await clickByText(page, '.crumb', 'Home');
+  await sleep(300);
+  await clickByText(page, '.folder-head-actions button', 'Study');
+  await page.waitForSelector('.study-card');
+  await waitForText(page, 'All decks');
+  ok('Home Study starts a whole-collection session ("All decks")');
+
+  // 29. RTL: Hebrew lines right-align, English lines left-align (per-line auto direction)
+  await clickByText(page, 'button', 'All decks'); // exit study
+  await sleep(300);
+  await clickByText(page, 'button', 'New folder');
+  await page.waitForSelector('.modal-panel input');
+  await page.type('.modal-panel input', 'RTLLab');
+  await clickByText(page, '.modal-panel button', 'Create');
+  await waitForText(page, 'RTLLab');
+  await clickByText(page, '.deck-tile', 'RTLLab', { count: 2 });
+  await page.waitForSelector('.folder-head-actions');
+  await clickByText(page, '.folder-head-actions button', 'Add note');
+  await page.waitForSelector('.add-view textarea');
+  const rtlAreas = await page.$$('.add-view textarea');
+  await rtlAreas[0].type('מהי בירת ישראל?\nAnswer with one word');
+  await rtlAreas[1].type('ירושלים');
+  await clickByText(page, 'button', 'Add note');
+  await waitForText(page, 'Added — 1 card created');
+  await clickByText(page, '.add-back-btn', 'Back to RTLLab');
+  await sleep(300);
+  await clickByText(page, '.folder-head-actions button', 'Study');
+  await page.waitForSelector('.study-question .field-content');
+  const rtl = await page.evaluate(() => {
+    const el = document.querySelector('.study-question .field-content');
+    const cs = getComputedStyle(el);
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let heb = null;
+    let eng = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode;
+      if (/[\u0590-\u05FF]/.test(t.textContent)) heb = t;
+      if (/Answer/.test(t.textContent)) eng = t;
+    }
+    if (!heb || !eng) return { missing: true };
+    const rect = (n) => {
+      const r = document.createRange();
+      r.selectNodeContents(n);
+      return r.getBoundingClientRect();
+    };
+    const cont = el.getBoundingClientRect();
+    const hr = rect(heb);
+    const er = rect(eng);
+    return {
+      ub: cs.unicodeBidi,
+      hebFromRight: Math.round(cont.right - hr.right),
+      hebFromLeft: Math.round(hr.left - cont.left),
+      engFromLeft: Math.round(er.left - cont.left),
+    };
+  });
+  if (rtl.ub === 'plaintext' && rtl.hebFromRight <= 8 && rtl.engFromLeft <= 8 && rtl.hebFromLeft > 20) {
+    ok(`RTL per-line auto direction: Hebrew hugs right (${rtl.hebFromRight}px), English hugs left (${rtl.engFromLeft}px)`);
+  } else fail('rtl per-line direction', JSON.stringify(rtl));
+  await page.screenshot({ path: `${SHOT_DIR}/study-rtl.png` });
+
   console.log('\nPage JS errors:', errors.length ? errors : 'none');
   const failed = results.filter(([s]) => s === 'FAIL');
   console.log(`\n=== ${results.length - failed.length}/${results.length} passed ===`);

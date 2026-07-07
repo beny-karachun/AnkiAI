@@ -18,6 +18,7 @@ import { compileSearch, buildDeckPaths } from '../lib/search';
 import { dayEnd, formatInterval, forgetCards, setSuspended, buryCard } from '../lib/scheduler';
 import { deleteNotes, moveCardsToDeck } from '../lib/notes';
 import { stripCloze } from '../lib/cloze';
+import { InlineContent } from './FieldContent';
 import { NoteEditModal } from './NoteEditModal';
 import { Modal, useConfirm, useToast } from './ui';
 import { DeckPicker } from './DeckPicker';
@@ -247,7 +248,7 @@ export function BrowserView({
               >
                 <td className="cell-question">
                   {card.flag > 0 && <Flag size={12} fill={FLAG_COLORS[card.flag]} color={FLAG_COLORS[card.flag]} />}
-                  {cardTitle(note, card)}
+                  <InlineContent text={cardTitle(note, card)} flat />
                 </td>
                 <td className="cell-deck">{deckPath.replace(/::/g, ' › ')}</td>
                 <td>

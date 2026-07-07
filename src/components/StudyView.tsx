@@ -51,7 +51,8 @@ export function StudyView({
   onExit,
   onChanged,
 }: {
-  deckId: string;
+  /** null = study the whole collection */
+  deckId: string | null;
   settings: Settings;
   onExit: () => void;
   onChanged: () => void;
@@ -77,7 +78,7 @@ export function StudyView({
   const busyRef = useRef(false);
 
   const deckById = useMemo(() => new Map((decks ?? []).map((d) => [d.id, d])), [decks]);
-  const rootDeck = deckById.get(deckId);
+  const rootDeck = deckId !== null ? deckById.get(deckId) : undefined;
 
   const presentFrom = useCallback(
     (q: StudyQueue) => {
@@ -107,7 +108,7 @@ export function StudyView({
 
   const loadQueue = useCallback(async () => {
     const allDecks = await db.decks.toArray();
-    if (!allDecks.some((d) => d.id === deckId)) {
+    if (deckId !== null && !allDecks.some((d) => d.id === deckId)) {
       onExit();
       return;
     }
@@ -365,7 +366,7 @@ export function StudyView({
     }
   }, [phase, mode, card]);
 
-  if (!rootDeck || !queue) return <div className="view-pad">Loading…</div>;
+  if (!queue || (deckId !== null && !rootDeck)) return <div className="view-pad">Loading…</div>;
 
   // ---------- render helpers ----------
 
@@ -395,7 +396,7 @@ export function StudyView({
     <div className="study-view anim-in">
       <div className="study-topbar">
         <button className="btn btn-ghost btn-sm" onClick={onExit}>
-          <ArrowLeft size={15} /> {rootDeck.name}
+          <ArrowLeft size={15} /> {rootDeck?.name ?? 'All decks'}
         </button>
         <div className="study-counts" aria-label="Remaining cards">
           <span className={`count-new ${stateLabel === 'new' ? 'count-active' : ''}`}>{remaining.newCount}</span>

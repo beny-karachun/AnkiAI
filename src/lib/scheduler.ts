@@ -261,24 +261,31 @@ function shuffle<T>(arr: T[]): T[] {
 
 export async function buildQueue(
   decks: Deck[],
-  rootDeckId: string,
+  rootDeckId: string | null,
   now: number,
   dayStartHour: number,
 ): Promise<StudyQueue> {
-  const deckIds = descendantIds(decks, rootDeckId);
+  // null = study the whole collection (Home): every deck, per-deck limits only
+  const deckIds = rootDeckId === null ? decks.map((d) => d.id) : descendantIds(decks, rootDeckId);
   const studied = await todayStudied(now, dayStartHour);
   const buckets = await buildBuckets(decks, deckIds, now, dayStartHour, studied);
-  const root = decks.find((d) => d.id === rootDeckId);
-  const rootNewLimit = Math.max(
-    0,
-    (root?.config.newPerDay ?? 0) -
-      deckIds.reduce((sum, id) => sum + (studied.newByDeck.get(id) ?? 0), 0),
-  );
-  const rootReviewLimit = Math.max(
-    0,
-    (root?.config.reviewsPerDay ?? 0) -
-      deckIds.reduce((sum, id) => sum + (studied.reviewByDeck.get(id) ?? 0), 0),
-  );
+  const root = rootDeckId === null ? null : decks.find((d) => d.id === rootDeckId);
+  const rootNewLimit =
+    rootDeckId === null
+      ? Infinity
+      : Math.max(
+          0,
+          (root?.config.newPerDay ?? 0) -
+            deckIds.reduce((sum, id) => sum + (studied.newByDeck.get(id) ?? 0), 0),
+        );
+  const rootReviewLimit =
+    rootDeckId === null
+      ? Infinity
+      : Math.max(
+          0,
+          (root?.config.reviewsPerDay ?? 0) -
+            deckIds.reduce((sum, id) => sum + (studied.reviewByDeck.get(id) ?? 0), 0),
+        );
 
   const learning = buckets
     .flatMap((b) => b.learnCards)

@@ -140,6 +140,11 @@
   font-size: 22px;
 }
 
+/* "Back to <folder>" in the Add view sits left of the title */
+.add-view .view-head .add-back-btn + h2 {
+  margin-right: auto;
+}
+
 /* ---------- deck table ---------- */
 
 .deck-table {
@@ -862,6 +867,30 @@
 .media-missing {
   color: var(--color-destructive);
   font-size: 13px;
+}
+
+/* ---------- RTL: Obsidian-style per-line auto direction ----------
+   unicode-bidi: plaintext resolves the base direction of every line (bidi
+   paragraph) from its first strongly-directional character: Hebrew/Arabic
+   lines right-align while English lines in the same field stay left-aligned,
+   and inline LTR↔RTL mixing follows the Unicode bidi algorithm. Math SVG is
+   an atomic inline object, so formulas embed cleanly inside RTL lines. */
+.field-content,
+.textarea,
+.input,
+.tile-name,
+.crumb,
+.cell-question,
+.cell-tags,
+.deck-name,
+.ai-feedback,
+.ai-missed li,
+.ai-your-answer {
+  unicode-bidi: plaintext;
+}
+
+.field-content {
+  text-align: start; /* with plaintext, each line aligns to its own direction */
 }
 
 /* TeX math (MathJax SVG output; fills inherit currentColor so themes just work) */

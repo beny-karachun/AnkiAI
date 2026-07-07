@@ -75,13 +75,13 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-/** A run of prose: TeX math segments + newlines + markdown-lite. */
-function renderTextRun(text: string, keyPrefix: string): ReactNode[] {
+/** A run of prose: TeX math segments + newlines + markdown-lite. `flat` keeps $$…$$ inline (titles, table rows). */
+function renderTextRun(text: string, keyPrefix: string, flat = false): ReactNode[] {
   const out: ReactNode[] = [];
   splitMath(text).forEach((seg, mi) => {
     const key = `${keyPrefix}-m${mi}`;
     if (seg.kind === 'math') {
-      out.push(<MathTex key={key} tex={seg.tex} display={seg.display} />);
+      out.push(<MathTex key={key} tex={seg.tex} display={seg.display && !flat} />);
       return;
     }
     seg.text.split('\n').forEach((line, li) => {
@@ -92,9 +92,9 @@ function renderTextRun(text: string, keyPrefix: string): ReactNode[] {
   return out;
 }
 
-/** Math + markdown-lite for plain prose (AI feedback, typed answers) — no image/cloze tokens. */
-export function InlineContent({ text }: { text: string }) {
-  return <>{renderTextRun(text, 'ic')}</>;
+/** Math + markdown-lite for plain prose (AI feedback, note titles) — no image/cloze tokens. */
+export function InlineContent({ text, flat }: { text: string; flat?: boolean }) {
+  return <>{renderTextRun(text, 'ic', flat)}</>;
 }
 
 /**

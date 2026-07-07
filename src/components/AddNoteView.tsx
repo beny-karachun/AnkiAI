@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Plus } from 'lucide-react';
+import { ArrowLeft, Plus } from 'lucide-react';
+import { db } from '../db';
 import type { NoteType } from '../types';
 import { addNote, allTags, findDuplicate } from '../lib/notes';
 import { clozeIndices } from '../lib/cloze';
@@ -12,10 +13,15 @@ export function AddNoteView({
   defaultDeckId,
   onDeckUsed,
   onAdded,
+  originDeckId,
+  onBack,
 }: {
   defaultDeckId: string;
   onDeckUsed: (deckId: string) => void;
   onAdded: () => void;
+  /** set when the user arrived via "Add note here" — enables the Go-back button */
+  originDeckId?: string | null;
+  onBack?: (deckId: string) => void;
 }) {
   const toast = useToast();
   const [type, setType] = useState<NoteType>('basic');
@@ -25,6 +31,10 @@ export function AddNoteView({
   const [tags, setTags] = useState<string[]>([]);
   const [dupWarn, setDupWarn] = useState(false);
   const suggestions = useLiveQuery(() => allTags(), []) ?? [];
+  const originDeck = useLiveQuery(
+    async () => (originDeckId ? await db.decks.get(originDeckId) : undefined),
+    [originDeckId],
+  );
 
   useEffect(() => {
     setDeckId(defaultDeckId);
@@ -74,6 +84,15 @@ export function AddNoteView({
   return (
     <div className="view-pad add-view anim-in">
       <div className="view-head">
+        {originDeck && onBack && (
+          <button
+            className="btn btn-sm btn-secondary add-back-btn"
+            onClick={() => onBack(originDeck.id)}
+            title={`Back to the "${originDeck.name}" folder`}
+          >
+            <ArrowLeft size={14} /> Back to {originDeck.name}
+          </button>
+        )}
         <h2>Add note</h2>
       </div>
       <div className="card-panel add-panel">

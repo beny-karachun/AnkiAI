@@ -24,6 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { db, saveSettings } from '../db';
+import { InlineContent } from './FieldContent';
 import type { Deck, DeckConfig, DeckTreeNode, Note, Settings, StudyCounts } from '../types';
 import {
   buildDeckTree,
@@ -69,7 +70,8 @@ export function DecksView({
   folderId,
   onNavigate,
 }: {
-  onStudy: (deckId: string) => void;
+  /** null = study the whole collection (Home) */
+  onStudy: (deckId: string | null) => void;
   onAddHere: (deckId: string) => void;
   settings: Settings;
   refreshKey: number;
@@ -228,7 +230,7 @@ function DesktopGrid({
   totalsById: Map<string, StudyCounts>;
   folderId: string | null;
   onNavigate: (id: string | null) => void;
-  onStudy: (deckId: string) => void;
+  onStudy: (deckId: string | null) => void;
   onAddHere: (deckId: string) => void;
   onNewFolder: (parentId: string | null) => void;
   onOptions: (deck: Deck) => void;
@@ -729,23 +731,29 @@ function DesktopGrid({
             </>
           )}
         </span>
-        {folder && (
-          <span className="folder-head-actions">
+        <span className="folder-head-actions">
+          {folder && (
             <button className="btn btn-sm btn-secondary" onClick={() => onAddHere(folder.id)}>
               <Plus size={13} /> Add note
             </button>
-            <button
-              className="btn btn-sm btn-primary"
-              disabled={
-                !folderCounts ||
-                folderCounts.newCount + folderCounts.learnCount + folderCounts.reviewCount === 0
-              }
-              onClick={() => onStudy(folder.id)}
-            >
-              <Play size={13} /> Study
-            </button>
-          </span>
-        )}
+          )}
+          {(() => {
+            // Study exactly what you're looking at: this folder's subtree, or
+            // the whole collection at Home.
+            const c = folder ? folderCounts : homeTotals;
+            const empty = !c || c.newCount + c.learnCount + c.reviewCount === 0;
+            return (
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={empty}
+                onClick={() => onStudy(folder ? folder.id : null)}
+                title={folder ? `Study "${folder.name}" and its subfolders` : 'Study all decks'}
+              >
+                <Play size={13} /> Study
+              </button>
+            );
+          })()}
+        </span>
       </div>
 
       <p className="tooltip-hint manager-hint">
@@ -974,7 +982,7 @@ function NoteTile({
         )}
       </div>
       <div className="tile-name" title={noteTitle(note)}>
-        {noteTitle(note)}
+        <InlineContent text={noteTitle(note)} flat />
       </div>
     </div>
   );
