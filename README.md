@@ -1,4 +1,4 @@
-# AnkiAI
+# AIstudynotes
 
 A local-first spaced-repetition study app (Anki-style) with **AI grading of your understanding** via the Gemini API. Instead of only flipping cards and self-grading, you can type an answer in your own words — including for cards that contain **pasted screenshots** — and the AI scores how well you actually understand the material, then suggests the Again/Hard/Good/Easy rating.
 

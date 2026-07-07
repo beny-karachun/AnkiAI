@@ -97,7 +97,7 @@ export default function App() {
           <span className="brand-mark">
             <GraduationCap size={20} />
           </span>
-          <span className="brand-name">AnkiAI</span>
+          <span className="brand-name">AIstudynotes</span>
         </div>
         <nav aria-label="Main navigation">
           {NAV.map(({ view: v, label, icon: Icon }) => (

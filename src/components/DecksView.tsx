@@ -393,7 +393,7 @@ function DesktopGrid({
       const ids = descendantIds(decks, deckId);
       const blob = await exportCollection(ids);
       const name = decks.find((d) => d.id === deckId)?.name ?? 'deck';
-      downloadBlob(blob, `${name.replace(/[^\w-]+/g, '_')}.ankiai.json`);
+      downloadBlob(blob, `${name.replace(/[^\w-]+/g, '_')}.aistudynotes.json`);
       toast.push('success', 'Deck exported.');
     },
     [decks, toast],
@@ -1146,7 +1146,7 @@ function ListRows({
     const decks = await db.decks.toArray();
     const ids = descendantIds(decks, deck.id);
     const blob = await exportCollection(ids);
-    downloadBlob(blob, `${deck.name.replace(/[^\w-]+/g, '_')}.ankiai.json`);
+    downloadBlob(blob, `${deck.name.replace(/[^\w-]+/g, '_')}.aistudynotes.json`);
     toast.push('success', 'Deck exported.');
   };
 

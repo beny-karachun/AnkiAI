@@ -334,7 +334,7 @@ export function SettingsView({
             className="btn btn-secondary"
             onClick={async () => {
               const blob = await exportCollection();
-              downloadBlob(blob, `ankiai-backup-${new Date().toISOString().slice(0, 10)}.json`);
+              downloadBlob(blob, `aistudynotes-backup-${new Date().toISOString().slice(0, 10)}.json`);
               toast.push('success', 'Collection exported.');
             }}
           >

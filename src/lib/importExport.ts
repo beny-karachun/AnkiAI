@@ -10,7 +10,8 @@ interface ExportedMedia {
 }
 
 export interface CollectionExport {
-  app: 'ankiai';
+  /** 'ankiai' accepted on import for backups made before the rename */
+  app: 'aistudynotes' | 'ankiai';
   version: 1;
   exportedAt: number;
   decks: Deck[];
@@ -64,7 +65,7 @@ export async function exportCollection(deckIds?: string[]): Promise<Blob> {
 
   const settings = await db.settings.get('app');
   const exported: CollectionExport = {
-    app: 'ankiai',
+    app: 'aistudynotes',
     version: 1,
     exportedAt: Date.now(),
     decks,
@@ -96,8 +97,8 @@ export async function importCollection(json: string): Promise<ImportResult> {
   } catch {
     throw new Error('Not a valid JSON file.');
   }
-  if (data.app !== 'ankiai' || !Array.isArray(data.decks)) {
-    throw new Error('Not an AnkiAI export file.');
+  if ((data.app !== 'aistudynotes' && data.app !== 'ankiai') || !Array.isArray(data.decks)) {
+    throw new Error('Not an AIstudynotes export file.');
   }
   // Orphaned parentIds (deck-subtree exports) become root decks.
   const deckIds = new Set(data.decks.map((d) => d.id));

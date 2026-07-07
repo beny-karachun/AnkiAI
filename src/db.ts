@@ -18,6 +18,7 @@ export class AnkiDB extends Dexie {
   settings!: Table<Settings, string>;
 
   constructor() {
+    // Original app name; renaming the IndexedDB database would orphan existing user data.
     super('ankiai');
     this.version(1).stores({
       decks: 'id, parentId, name',

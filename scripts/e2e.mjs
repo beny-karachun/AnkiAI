@@ -1,4 +1,4 @@
-// End-to-end smoke test for AnkiAI using system Chrome via puppeteer-core.
+// End-to-end smoke test for AIstudynotes using system Chrome via puppeteer-core.
 import puppeteer from 'puppeteer-core';
 
 const BASE = 'http://localhost:5199';
