@@ -3,11 +3,17 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import {
   ChevronDown,
   ChevronRight,
+  ChevronRight as Crumb,
   ClipboardPaste,
   Copy,
   Download,
+  FileText,
+  Folder,
+  FolderOpen,
   FolderPlus,
-  FolderTree,
+  Home,
+  Image as ImageIcon,
+  LayoutGrid,
   List,
   MoreHorizontal,
   Pencil,
@@ -18,7 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { db, saveSettings } from '../db';
-import type { Deck, DeckConfig, DeckTreeNode, Settings } from '../types';
+import type { Deck, DeckConfig, DeckTreeNode, Note, Settings, StudyCounts } from '../types';
 import {
   buildDeckTree,
   copyDeckSubtree,
@@ -29,40 +35,49 @@ import {
   renameDeck,
   setDeckConfig,
 } from '../lib/decks';
+import { deleteNotes, duplicateNotes, moveNotes } from '../lib/notes';
 import { allDeckCounts, descendantIds, isDescendant } from '../lib/scheduler';
 import { exportCollection, downloadBlob } from '../lib/importExport';
+import { stripCloze } from '../lib/cloze';
+import { mediaIdsIn, mediaUrl } from '../lib/media';
 import { Modal, useConfirm, useToast } from './ui';
+import { NoteEditModal } from './NoteEditModal';
 
-type Clipboard = { op: 'cut' | 'copy'; ids: string[] } | null;
-type CtxMenu = { x: number; y: number; deckId: string | null } | null;
+type Clip = { op: 'cut' | 'copy'; deckIds: string[]; noteIds: string[] } | null;
+
+interface MenuItem {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  disabled?: boolean;
+  danger?: boolean;
+}
+
+type CtxTarget = { kind: 'deck'; id: string } | { kind: 'note'; id: string } | { kind: 'bg' };
+type Ctx = { x: number; y: number; target: CtxTarget } | null;
+
+const deckKey = (id: string) => `d:${id}`;
+const noteKey = (id: string) => `n:${id}`;
+const NOTE_TILE_CAP = 96;
 
 export function DecksView({
   onStudy,
+  onAddHere,
   settings,
   refreshKey,
   onSettingsChanged,
+  folderId,
+  onNavigate,
 }: {
   onStudy: (deckId: string) => void;
+  onAddHere: (deckId: string) => void;
   settings: Settings;
   refreshKey: number;
   onSettingsChanged: () => void;
+  folderId: string | null;
+  onNavigate: (folderId: string | null) => void;
 }) {
-  const toast = useToast();
-  const confirm = useConfirm();
-  const mode = settings.deckViewMode ?? 'manager';
-  const isManager = mode === 'manager';
-
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [lastClicked, setLastClicked] = useState<string | null>(null);
-  const [clipboard, setClipboard] = useState<Clipboard>(null);
-  const [ctxMenu, setCtxMenu] = useState<CtxMenu>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameModalDeck, setRenameModalDeck] = useState<Deck | null>(null);
-  const [optionsFor, setOptionsFor] = useState<Deck | null>(null);
-  const [addingUnder, setAddingUnder] = useState<{ parentId: string | null } | null>(null);
-  const [dropTarget, setDropTarget] = useState<string | null>(null);
-  const [dropRoot, setDropRoot] = useState(false);
-  const draggingIds = useRef<string[]>([]);
+  const mode = settings.deckViewMode === 'list' ? 'list' : 'desktop';
 
   const decks = useLiveQuery(() => db.decks.toArray(), []);
   const counts = useLiveQuery(async () => {
@@ -71,213 +86,36 @@ export function DecksView({
   }, [settings.dayStartHour, refreshKey]);
 
   const tree = useMemo(() => (decks && counts ? buildDeckTree(decks, counts) : null), [decks, counts]);
-  const rows = useMemo(() => (tree ? visibleRows(tree) : []), [tree]);
+  const totalsById = useMemo(() => {
+    const map = new Map<string, StudyCounts>();
+    if (!tree) return map;
+    const walk = (n: DeckTreeNode) => {
+      map.set(n.deck.id, n.totalCounts);
+      n.children.forEach(walk);
+    };
+    tree.forEach(walk);
+    return map;
+  }, [tree]);
 
-  /** Drop ids whose ancestor is also in the set (they move/copy with the ancestor). */
-  const topMost = useCallback(
-    (ids: string[]): string[] => {
-      if (!decks) return ids;
-      return ids.filter((id) => !ids.some((other) => other !== id && isDescendant(decks, id, other)));
-    },
-    [decks],
-  );
+  const [addingUnder, setAddingUnder] = useState<{ parentId: string | null } | null>(null);
+  const [optionsFor, setOptionsFor] = useState<Deck | null>(null);
+  const [renameModalDeck, setRenameModalDeck] = useState<Deck | null>(null);
+  const [editingNote, setEditingNote] = useState<string | null>(null);
+  const toast = useToast();
 
-  // ---------- operations ----------
-
-  const performMove = useCallback(
-    async (ids: string[], targetId: string | null) => {
-      let moved = 0;
-      let skipped = 0;
-      for (const id of topMost(ids)) {
-        (await moveDeck(id, targetId)) ? moved++ : skipped++;
-      }
-      if (moved) toast.push('success', `Moved ${moved} deck${moved === 1 ? '' : 's'}.`);
-      if (skipped) toast.push('info', `${skipped} skipped (a folder can't move into itself).`);
-    },
-    [topMost, toast],
-  );
-
-  const performCopy = useCallback(
-    async (ids: string[], targetId: string | null) => {
-      const top = topMost(ids);
-      for (const id of top) {
-        await copyDeckSubtree(id, targetId);
-      }
-      toast.push('success', `Pasted ${top.length} deck${top.length === 1 ? '' : 's'} (cards included).`);
-    },
-    [topMost, toast],
-  );
-
-  const paste = useCallback(
-    async (targetId: string | null) => {
-      if (!clipboard || !decks) return;
-      const ids = clipboard.ids.filter((id) => decks.some((d) => d.id === id));
-      if (ids.length === 0) {
-        setClipboard(null);
-        return;
-      }
-      if (clipboard.op === 'cut') {
-        await performMove(ids, targetId);
-        setClipboard(null);
-      } else {
-        await performCopy(ids, targetId);
-      }
-    },
-    [clipboard, decks, performMove, performCopy],
-  );
-
-  const bulkDelete = useCallback(
-    async (ids: string[]) => {
-      const top = topMost(ids);
-      if (top.length === 0 || !decks) return;
-      let cardCount = 0;
-      for (const id of top) cardCount += await countCardsInSubtree(id);
-      const names = top
-        .map((id) => decks.find((d) => d.id === id)?.name)
-        .filter(Boolean)
-        .slice(0, 3)
-        .join(', ');
-      const ok = await confirm({
-        title: `Delete ${top.length === 1 ? `"${names}"` : `${top.length} decks`}?`,
-        message: `This deletes ${top.length === 1 ? 'the deck' : `${names}${top.length > 3 ? '…' : ''}`}, all subdecks, and ${cardCount} card${cardCount === 1 ? '' : 's'}. This cannot be undone.`,
-        confirmLabel: 'Delete',
-        danger: true,
-      });
-      if (!ok) return;
-      for (const id of top) await deleteDeckSubtree(id);
-      setSelected(new Set());
-      toast.push('success', 'Deleted.');
-    },
-    [topMost, decks, confirm, toast],
-  );
-
-  const handleExport = useCallback(
-    async (deckId: string) => {
-      if (!decks) return;
-      const ids = descendantIds(decks, deckId);
-      const blob = await exportCollection(ids);
-      const name = decks.find((d) => d.id === deckId)?.name ?? 'deck';
-      downloadBlob(blob, `${name.replace(/[^\w-]+/g, '_')}.ankiai.json`);
-      toast.push('success', 'Deck exported.');
-    },
-    [decks, toast],
-  );
-
-  const setMode = async (m: 'manager' | 'simple') => {
+  const setMode = async (m: 'desktop' | 'list') => {
     await saveSettings({ deckViewMode: m });
-    setSelected(new Set());
-    setClipboard(null);
-    setCtxMenu(null);
     onSettingsChanged();
   };
 
-  // ---------- selection ----------
-
-  const selectRow = (id: string, e: React.MouseEvent) => {
-    const next = new Set(selected);
-    if (e.shiftKey && lastClicked) {
-      const ids = rows.map((r) => r.deck.id);
-      const a = ids.indexOf(lastClicked);
-      const b = ids.indexOf(id);
-      if (a !== -1 && b !== -1) {
-        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(ids[i]);
-      }
-    } else if (e.ctrlKey || e.metaKey) {
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-    } else {
-      next.clear();
-      next.add(id);
+  // reset navigation if the current folder was deleted
+  useEffect(() => {
+    if (folderId && decks && !decks.some((d) => d.id === folderId)) {
+      onNavigate(null);
     }
-    setSelected(next);
-    setLastClicked(id);
-  };
-
-  // ---------- keyboard ----------
-
-  useEffect(() => {
-    if (!isManager) return;
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
-      if (renamingId || renameModalDeck || optionsFor || addingUnder) return;
-      const sel = [...selected];
-      if (e.key === 'Escape') {
-        setCtxMenu(null);
-        if (clipboard) setClipboard(null);
-        else setSelected(new Set());
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        setSelected(new Set(rows.map((r) => r.deck.id)));
-        return;
-      }
-      if (sel.length > 0 && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
-        e.preventDefault();
-        setClipboard({ op: 'cut', ids: sel });
-        return;
-      }
-      if (sel.length > 0 && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-        e.preventDefault();
-        setClipboard({ op: 'copy', ids: sel });
-        return;
-      }
-      if (clipboard && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-        e.preventDefault();
-        const target = sel.length === 1 && !clipboard.ids.includes(sel[0]) ? sel[0] : null;
-        void paste(target);
-        return;
-      }
-      if (sel.length > 0 && e.key === 'Delete') {
-        e.preventDefault();
-        void bulkDelete(sel);
-        return;
-      }
-      if (sel.length === 1 && e.key === 'F2') {
-        e.preventDefault();
-        setRenamingId(sel[0]);
-        return;
-      }
-      if (sel.length === 1 && e.key === 'Enter') {
-        e.preventDefault();
-        onStudy(sel[0]);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isManager, selected, clipboard, rows, renamingId, renameModalDeck, optionsFor, addingUnder, paste, bulkDelete, onStudy]);
-
-  // close the context menu on any click / scroll
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    window.addEventListener('click', close);
-    window.addEventListener('scroll', close, true);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('scroll', close, true);
-    };
-  }, [ctxMenu]);
+  }, [decks, folderId, onNavigate]);
 
   if (!decks || !counts || !tree) return <div className="view-pad">Loading…</div>;
-
-  const totals = tree.reduce(
-    (acc, n) => ({
-      newCount: acc.newCount + n.totalCounts.newCount,
-      learnCount: acc.learnCount + n.totalCounts.learnCount,
-      reviewCount: acc.reviewCount + n.totalCounts.reviewCount,
-    }),
-    { newCount: 0, learnCount: 0, reviewCount: 0 },
-  );
-
-  const openCtxForRow = (deckId: string, x: number, y: number) => {
-    if (isManager && !selected.has(deckId)) {
-      setSelected(new Set([deckId]));
-      setLastClicked(deckId);
-    }
-    setCtxMenu({ x, y, deckId });
-  };
 
   return (
     <div className="view-pad decks-view anim-in">
@@ -286,184 +124,48 @@ export function DecksView({
         <div className="decks-toolbar">
           <div className="seg-control" role="group" aria-label="Decks view mode">
             <button
-              className={isManager ? 'active' : ''}
-              onClick={() => void setMode('manager')}
-              title="File manager: select, drag & drop, cut/copy/paste"
+              className={mode === 'desktop' ? 'active' : ''}
+              onClick={() => void setMode('desktop')}
+              title="Desktop: folders as an icon grid — drag, drop, cut, copy, paste"
             >
-              <FolderTree size={13} /> Manager
+              <LayoutGrid size={13} /> Desktop
             </button>
             <button
-              className={!isManager ? 'active' : ''}
-              onClick={() => void setMode('simple')}
+              className={mode === 'list' ? 'active' : ''}
+              onClick={() => void setMode('list')}
               title="Simple list: click a deck to study"
             >
-              <List size={13} /> Simple
+              <List size={13} /> List
             </button>
           </div>
-          <button className="btn btn-primary" onClick={() => setAddingUnder({ parentId: null })}>
-            <Plus size={16} /> New deck
+          <button
+            className="btn btn-primary"
+            onClick={() => setAddingUnder({ parentId: mode === 'desktop' ? folderId : null })}
+          >
+            <Plus size={16} /> {mode === 'desktop' ? 'New folder' : 'New deck'}
           </button>
         </div>
       </div>
 
-      {isManager && (
-        <p className="tooltip-hint manager-hint">
-          Click to select · double-click to study · drag to move into a folder · Ctrl+X/C/V cut, copy, paste ·
-          F2 rename · Del delete · right-click for more
-        </p>
-      )}
-
-      <div
-        className={`card-panel deck-table ${dropRoot ? 'drop-root' : ''}`}
-        onClick={(e) => {
-          if (isManager && !(e.target as HTMLElement).closest('.deck-row')) {
-            setSelected(new Set());
-          }
-        }}
-        onContextMenu={(e) => {
-          if (!isManager) return;
-          if (!(e.target as HTMLElement).closest('.deck-row')) {
-            e.preventDefault();
-            setCtxMenu({ x: e.clientX, y: e.clientY, deckId: null });
-          }
-        }}
-        onDragOver={(e) => {
-          if (!isManager || draggingIds.current.length === 0) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          setDropRoot(true);
-          setDropTarget(null);
-        }}
-        onDragLeave={(e) => {
-          if (e.target === e.currentTarget) setDropRoot(false);
-        }}
-        onDrop={(e) => {
-          if (!isManager || draggingIds.current.length === 0) return;
-          e.preventDefault();
-          setDropRoot(false);
-          void performMove(draggingIds.current, null);
-          draggingIds.current = [];
-        }}
-      >
-        <div className="deck-row deck-row-head" aria-hidden="true">
-          <span />
-          <span className="deck-count-head">New</span>
-          <span className="deck-count-head">Learn</span>
-          <span className="deck-count-head">Due</span>
-          <span />
-        </div>
-        {rows.map((node) => (
-          <DeckRow
-            key={node.deck.id}
-            node={node}
-            manager={isManager}
-            selected={isManager && selected.has(node.deck.id)}
-            cut={clipboard?.op === 'cut' && clipboard.ids.includes(node.deck.id)}
-            dropping={dropTarget === node.deck.id}
-            renaming={renamingId === node.deck.id}
-            onStudy={onStudy}
-            onSelect={(e) => selectRow(node.deck.id, e)}
-            onContextMenu={(x, y) => openCtxForRow(node.deck.id, x, y)}
-            onRenamed={async (name) => {
-              if (name.trim() && name.trim() !== node.deck.name) {
-                await renameDeck(node.deck.id, name);
-              }
-              setRenamingId(null);
-            }}
-            onDragStart={(e) => {
-              const ids = selected.has(node.deck.id) ? [...selected] : [node.deck.id];
-              if (!selected.has(node.deck.id)) {
-                setSelected(new Set([node.deck.id]));
-                setLastClicked(node.deck.id);
-              }
-              draggingIds.current = topMost(ids);
-              e.dataTransfer.setData('text/plain', ids.join(','));
-              e.dataTransfer.effectAllowed = 'move';
-            }}
-            onDragOverRow={(e) => {
-              if (draggingIds.current.length === 0) return;
-              const invalid =
-                draggingIds.current.includes(node.deck.id) ||
-                draggingIds.current.some((id) => isDescendant(decks, node.deck.id, id));
-              if (invalid) return;
-              e.preventDefault();
-              e.stopPropagation();
-              e.dataTransfer.dropEffect = 'move';
-              setDropTarget(node.deck.id);
-              setDropRoot(false);
-            }}
-            onDragLeaveRow={() => {
-              setDropTarget((cur) => (cur === node.deck.id ? null : cur));
-            }}
-            onDropRow={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setDropTarget(null);
-              setDropRoot(false);
-              void performMove(draggingIds.current, node.deck.id);
-              draggingIds.current = [];
-            }}
-            onDragEnd={() => {
-              draggingIds.current = [];
-              setDropTarget(null);
-              setDropRoot(false);
-            }}
-          />
-        ))}
-        <div className="deck-row deck-row-total">
-          <span>Total</span>
-          <span className="deck-count count-new">{totals.newCount}</span>
-          <span className="deck-count count-learn">{totals.learnCount}</span>
-          <span className="deck-count count-due">{totals.reviewCount}</span>
-          <span />
-        </div>
-      </div>
-
-      {ctxMenu && (
-        <ContextMenu
-          menu={ctxMenu}
-          manager={isManager}
-          clipboard={clipboard}
-          selectedCount={selected.size || 1}
-          onAction={(action) => {
-            const id = ctxMenu.deckId;
-            setCtxMenu(null);
-            const deck = id ? decks.find((d) => d.id === id) : undefined;
-            switch (action) {
-              case 'study':
-                if (id) onStudy(id);
-                break;
-              case 'newDeck':
-                setAddingUnder({ parentId: null });
-                break;
-              case 'addSub':
-                setAddingUnder({ parentId: id });
-                break;
-              case 'rename':
-                if (!deck) break;
-                if (isManager) setRenamingId(deck.id);
-                else setRenameModalDeck(deck);
-                break;
-              case 'cut':
-                setClipboard({ op: 'cut', ids: selected.has(id!) ? [...selected] : [id!] });
-                break;
-              case 'copy':
-                setClipboard({ op: 'copy', ids: selected.has(id!) ? [...selected] : [id!] });
-                break;
-              case 'paste':
-                void paste(id);
-                break;
-              case 'options':
-                if (deck) setOptionsFor(deck);
-                break;
-              case 'export':
-                if (id) void handleExport(id);
-                break;
-              case 'delete':
-                void bulkDelete(id && selected.has(id) ? [...selected] : id ? [id] : []);
-                break;
-            }
-          }}
+      {mode === 'desktop' ? (
+        <DesktopGrid
+          decks={decks}
+          totalsById={totalsById}
+          folderId={folderId}
+          onNavigate={onNavigate}
+          onStudy={onStudy}
+          onAddHere={onAddHere}
+          onNewFolder={(parentId) => setAddingUnder({ parentId })}
+          onOptions={setOptionsFor}
+          onEditNote={setEditingNote}
+        />
+      ) : (
+        <ListRows
+          tree={tree}
+          onStudy={onStudy}
+          onAddSub={(parentId) => setAddingUnder({ parentId })}
+          onRename={setRenameModalDeck}
+          onOptions={setOptionsFor}
         />
       )}
 
@@ -485,7 +187,7 @@ export function DecksView({
           onCreate={async (name) => {
             await createDeck(name, addingUnder.parentId);
             setAddingUnder(null);
-            toast.push('success', `Deck "${name}" created.`);
+            toast.push('success', `Folder "${name}" created.`);
           }}
         />
       )}
@@ -500,226 +202,812 @@ export function DecksView({
           }}
         />
       )}
+      {editingNote && (
+        <NoteEditModal noteId={editingNote} onClose={() => setEditingNote(null)} onSaved={() => setEditingNote(null)} />
+      )}
     </div>
   );
 }
 
-function visibleRows(tree: DeckTreeNode[]): DeckTreeNode[] {
-  const out: DeckTreeNode[] = [];
-  const walk = (n: DeckTreeNode) => {
-    out.push(n);
-    if (!n.deck.collapsed) n.children.forEach(walk);
+// ============================================================
+// Desktop grid
+// ============================================================
+
+function DesktopGrid({
+  decks,
+  totalsById,
+  folderId,
+  onNavigate,
+  onStudy,
+  onAddHere,
+  onNewFolder,
+  onOptions,
+  onEditNote,
+}: {
+  decks: Deck[];
+  totalsById: Map<string, StudyCounts>;
+  folderId: string | null;
+  onNavigate: (id: string | null) => void;
+  onStudy: (deckId: string) => void;
+  onAddHere: (deckId: string) => void;
+  onNewFolder: (parentId: string | null) => void;
+  onOptions: (deck: Deck) => void;
+  onEditNote: (noteId: string) => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
+  const [clipboard, setClipboard] = useState<Clip>(null);
+  const [ctx, setCtx] = useState<Ctx>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [dropKey, setDropKey] = useState<string | null>(null); // 'd:<id>' | 'crumb:<id|home>'
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const dragRef = useRef<{ deckIds: string[]; noteIds: string[] }>({ deckIds: [], noteIds: [] });
+  const marqueeMoved = useRef(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const folder = folderId ? decks.find((d) => d.id === folderId) ?? null : null;
+  const childFolders = useMemo(
+    () => decks.filter((d) => d.parentId === folderId).sort((a, b) => a.name.localeCompare(b.name)),
+    [decks, folderId],
+  );
+  const notes = useLiveQuery(
+    async () => (folderId ? db.notes.where('deckId').equals(folderId).toArray() : []),
+    [folderId],
+  );
+  const sortedNotes = useMemo(
+    () => [...(notes ?? [])].sort((a, b) => b.createdAt - a.createdAt),
+    [notes],
+  );
+  const shownNotes = sortedNotes.slice(0, NOTE_TILE_CAP);
+
+  const orderedKeys = useMemo(
+    () => [...childFolders.map((d) => deckKey(d.id)), ...shownNotes.map((n) => noteKey(n.id))],
+    [childFolders, shownNotes],
+  );
+
+  const crumbs = useMemo(() => {
+    const byId = new Map(decks.map((d) => [d.id, d]));
+    const path: Deck[] = [];
+    let cur = folder;
+    while (cur) {
+      path.unshift(cur);
+      cur = cur.parentId ? byId.get(cur.parentId) ?? null : null;
+    }
+    return path;
+  }, [decks, folder]);
+
+  const splitSelection = useCallback(
+    (sel: Set<string>) => ({
+      deckIds: [...sel].filter((k) => k.startsWith('d:')).map((k) => k.slice(2)),
+      noteIds: [...sel].filter((k) => k.startsWith('n:')).map((k) => k.slice(2)),
+    }),
+    [],
+  );
+
+  const topMostDecks = useCallback(
+    (ids: string[]) => ids.filter((id) => !ids.some((o) => o !== id && isDescendant(decks, id, o))),
+    [decks],
+  );
+
+  // ---------- operations ----------
+
+  const performDrop = useCallback(
+    async (deckIds: string[], noteIds: string[], targetId: string | null) => {
+      let moved = 0;
+      let skipped = 0;
+      for (const id of topMostDecks(deckIds)) {
+        (await moveDeck(id, targetId)) ? moved++ : skipped++;
+      }
+      if (noteIds.length > 0) {
+        if (targetId == null) {
+          toast.push('info', 'Notes must live inside a deck — they were not moved to Home.');
+        } else {
+          await moveNotes(noteIds, targetId);
+          moved += noteIds.length;
+        }
+      }
+      if (moved) toast.push('success', `Moved ${moved} item${moved === 1 ? '' : 's'}.`);
+      if (skipped) toast.push('info', `${skipped} skipped (a folder can't move into itself).`);
+    },
+    [topMostDecks, toast],
+  );
+
+  const paste = useCallback(
+    async (targetId: string | null) => {
+      if (!clipboard) return;
+      const deckIds = clipboard.deckIds.filter((id) => decks.some((d) => d.id === id));
+      const noteIds = clipboard.noteIds;
+      if (clipboard.op === 'cut') {
+        await performDrop(deckIds, noteIds, targetId);
+        setClipboard(null);
+      } else {
+        for (const id of topMostDecks(deckIds)) {
+          if (targetId && (id === targetId || isDescendant(decks, targetId, id))) {
+            toast.push('info', 'Skipped copying a folder into itself.');
+            continue;
+          }
+          await copyDeckSubtree(id, targetId);
+        }
+        if (noteIds.length > 0) {
+          if (targetId == null) {
+            toast.push('info', 'Notes must be pasted inside a deck.');
+          } else {
+            await duplicateNotes(noteIds, targetId);
+          }
+        }
+        toast.push('success', 'Pasted.');
+      }
+    },
+    [clipboard, decks, performDrop, topMostDecks, toast],
+  );
+
+  const removeSelection = useCallback(
+    async (sel: Set<string>) => {
+      const { deckIds, noteIds } = splitSelection(sel);
+      const topDecks = topMostDecks(deckIds);
+      if (topDecks.length === 0 && noteIds.length === 0) return;
+      let cardCount = 0;
+      for (const id of topDecks) cardCount += await countCardsInSubtree(id);
+      const parts: string[] = [];
+      if (topDecks.length) parts.push(`${topDecks.length} folder${topDecks.length === 1 ? '' : 's'} (${cardCount} cards)`);
+      if (noteIds.length) parts.push(`${noteIds.length} note${noteIds.length === 1 ? '' : 's'}`);
+      const ok = await confirm({
+        title: 'Delete?',
+        message: `This permanently deletes ${parts.join(' and ')}. This cannot be undone.`,
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!ok) return;
+      for (const id of topDecks) await deleteDeckSubtree(id);
+      if (noteIds.length) await deleteNotes(noteIds);
+      setSelected(new Set());
+      toast.push('success', 'Deleted.');
+    },
+    [splitSelection, topMostDecks, confirm, toast],
+  );
+
+  const handleExport = useCallback(
+    async (deckId: string) => {
+      const ids = descendantIds(decks, deckId);
+      const blob = await exportCollection(ids);
+      const name = decks.find((d) => d.id === deckId)?.name ?? 'deck';
+      downloadBlob(blob, `${name.replace(/[^\w-]+/g, '_')}.ankiai.json`);
+      toast.push('success', 'Deck exported.');
+    },
+    [decks, toast],
+  );
+
+  // ---------- selection ----------
+
+  const selectItem = (key: string, e: React.MouseEvent) => {
+    const next = new Set(selected);
+    if (e.shiftKey && lastClicked) {
+      const a = orderedKeys.indexOf(lastClicked);
+      const b = orderedKeys.indexOf(key);
+      if (a !== -1 && b !== -1) {
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(orderedKeys[i]);
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+    } else {
+      next.clear();
+      next.add(key);
+    }
+    setSelected(next);
+    setLastClicked(key);
   };
-  tree.forEach(walk);
-  return out;
+
+  // ---------- marquee (rubber-band) selection ----------
+
+  const onGridMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('.tile')) return;
+    const grid = gridRef.current;
+    if (!grid) return;
+    const gridRect = grid.getBoundingClientRect();
+    const origin = { x: e.clientX, y: e.clientY };
+    const base = e.ctrlKey || e.metaKey ? new Set(selected) : new Set<string>();
+    marqueeMoved.current = false;
+
+    const onMove = (ev: MouseEvent) => {
+      const x = Math.min(origin.x, ev.clientX);
+      const y = Math.min(origin.y, ev.clientY);
+      const w = Math.abs(ev.clientX - origin.x);
+      const h = Math.abs(ev.clientY - origin.y);
+      if (w + h > 6) marqueeMoved.current = true;
+      setMarquee({ x: x - gridRect.left, y: y - gridRect.top, w, h });
+      const hits = new Set(base);
+      grid.querySelectorAll<HTMLElement>('.tile[data-key]').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const overlap = r.left < x + w && r.right > x && r.top < y + h && r.bottom > y;
+        if (overlap) hits.add(el.dataset.key!);
+      });
+      setSelected(hits);
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setMarquee(null);
+      // a plain click on empty space (no drag) clears the selection
+      if (!marqueeMoved.current && !(e.ctrlKey || e.metaKey)) setSelected(new Set());
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // ---------- keyboard ----------
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+      if (renamingId) return;
+      if (document.querySelector('.modal-overlay')) return;
+      const { deckIds, noteIds } = splitSelection(selected);
+
+      if (e.key === 'Escape') {
+        setCtx(null);
+        if (clipboard) setClipboard(null);
+        else setSelected(new Set());
+        return;
+      }
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (folder) onNavigate(folder.parentId);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setSelected(new Set(orderedKeys));
+        return;
+      }
+      if (selected.size > 0 && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
+        e.preventDefault();
+        setClipboard({ op: 'cut', deckIds, noteIds });
+        return;
+      }
+      if (selected.size > 0 && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        setClipboard({ op: 'copy', deckIds, noteIds });
+        return;
+      }
+      if (clipboard && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        void paste(folderId);
+        return;
+      }
+      if (selected.size > 0 && e.key === 'Delete') {
+        e.preventDefault();
+        void removeSelection(selected);
+        return;
+      }
+      if (deckIds.length === 1 && noteIds.length === 0 && e.key === 'F2') {
+        e.preventDefault();
+        setRenamingId(deckIds[0]);
+        return;
+      }
+      if (e.key === 'Enter' && selected.size === 1) {
+        e.preventDefault();
+        if (deckIds.length === 1) onNavigate(deckIds[0]);
+        else if (noteIds.length === 1) onEditNote(noteIds[0]);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, clipboard, orderedKeys, folder, folderId, renamingId, splitSelection, paste, removeSelection, onNavigate, onEditNote]);
+
+  useEffect(() => {
+    if (!ctx) return;
+    const close = () => setCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [ctx]);
+
+  // clear selection when navigating
+  useEffect(() => {
+    setSelected(new Set());
+    setLastClicked(null);
+  }, [folderId]);
+
+  // ---------- drag & drop ----------
+
+  const startDrag = (key: string, e: React.DragEvent) => {
+    let sel = selected;
+    if (!sel.has(key)) {
+      sel = new Set([key]);
+      setSelected(sel);
+      setLastClicked(key);
+    }
+    const { deckIds, noteIds } = splitSelection(sel);
+    dragRef.current = { deckIds: topMostDecks(deckIds), noteIds };
+    e.dataTransfer.setData('text/plain', [...sel].join(','));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const dropAccepts = (targetDeckId: string): boolean => {
+    const { deckIds, noteIds } = dragRef.current;
+    if (deckIds.length === 0 && noteIds.length === 0) return false;
+    if (deckIds.includes(targetDeckId)) return false;
+    if (deckIds.some((id) => isDescendant(decks, targetDeckId, id))) return false;
+    return true;
+  };
+
+  const finishDrop = (targetId: string | null) => {
+    const { deckIds, noteIds } = dragRef.current;
+    dragRef.current = { deckIds: [], noteIds: [] };
+    setDropKey(null);
+    void performDrop(deckIds, noteIds, targetId);
+  };
+
+  // ---------- context menu ----------
+
+  const openCtx = (target: CtxTarget, x: number, y: number) => {
+    if (target.kind === 'deck' && !selected.has(deckKey(target.id))) {
+      setSelected(new Set([deckKey(target.id)]));
+      setLastClicked(deckKey(target.id));
+    }
+    if (target.kind === 'note' && !selected.has(noteKey(target.id))) {
+      setSelected(new Set([noteKey(target.id)]));
+      setLastClicked(noteKey(target.id));
+    }
+    setCtx({ x, y, target });
+  };
+
+  const ctxItems = (target: CtxTarget): MenuItem[] => {
+    const multi = selected.size > 1;
+    const label = (base: string) => (multi ? `${base} ${selected.size} items` : base);
+    if (target.kind === 'deck') {
+      return [
+        { key: 'open', label: 'Open', icon: <FolderOpen size={15} /> },
+        { key: 'study', label: 'Study', icon: <Play size={15} /> },
+        { key: 'rename', label: 'Rename', icon: <Pencil size={15} /> },
+        { key: 'cut', label: label('Cut'), icon: <Scissors size={15} /> },
+        { key: 'copy', label: label('Copy'), icon: <Copy size={15} /> },
+        { key: 'pasteInto', label: 'Paste into folder', icon: <ClipboardPaste size={15} />, disabled: !clipboard },
+        { key: 'newInside', label: 'New subfolder', icon: <FolderPlus size={15} /> },
+        { key: 'options', label: 'Options', icon: <Settings2 size={15} /> },
+        { key: 'export', label: 'Export', icon: <Download size={15} /> },
+        { key: 'delete', label: label('Delete'), icon: <Trash2 size={15} />, danger: true },
+      ];
+    }
+    if (target.kind === 'note') {
+      return [
+        { key: 'edit', label: 'Edit', icon: <Pencil size={15} /> },
+        { key: 'cut', label: label('Cut'), icon: <Scissors size={15} /> },
+        { key: 'copy', label: label('Copy'), icon: <Copy size={15} /> },
+        { key: 'delete', label: label('Delete'), icon: <Trash2 size={15} />, danger: true },
+      ];
+    }
+    return [
+      { key: 'newFolder', label: 'New folder', icon: <FolderPlus size={15} /> },
+      ...(folder ? [{ key: 'addNote', label: 'Add note here', icon: <Plus size={15} /> }] : []),
+      { key: 'paste', label: 'Paste', icon: <ClipboardPaste size={15} />, disabled: !clipboard },
+      { key: 'selectAll', label: 'Select all', icon: <Copy size={15} /> },
+    ];
+  };
+
+  const onCtxAction = (action: string) => {
+    const target = ctx!.target;
+    setCtx(null);
+    const { deckIds, noteIds } = splitSelection(selected);
+    switch (action) {
+      case 'open':
+        if (target.kind === 'deck') onNavigate(target.id);
+        break;
+      case 'study':
+        if (target.kind === 'deck') onStudy(target.id);
+        break;
+      case 'rename':
+        if (target.kind === 'deck') setRenamingId(target.id);
+        break;
+      case 'cut':
+        setClipboard({ op: 'cut', deckIds, noteIds });
+        break;
+      case 'copy':
+        setClipboard({ op: 'copy', deckIds, noteIds });
+        break;
+      case 'paste':
+        void paste(folderId);
+        break;
+      case 'pasteInto':
+        if (target.kind === 'deck') void paste(target.id);
+        break;
+      case 'newFolder':
+        onNewFolder(folderId);
+        break;
+      case 'newInside':
+        if (target.kind === 'deck') onNewFolder(target.id);
+        break;
+      case 'addNote':
+        if (folderId) onAddHere(folderId);
+        break;
+      case 'selectAll':
+        setSelected(new Set(orderedKeys));
+        break;
+      case 'options': {
+        if (target.kind === 'deck') {
+          const deck = decks.find((d) => d.id === target.id);
+          if (deck) onOptions(deck);
+        }
+        break;
+      }
+      case 'export':
+        if (target.kind === 'deck') void handleExport(target.id);
+        break;
+      case 'edit':
+        if (target.kind === 'note') onEditNote(target.id);
+        break;
+      case 'delete':
+        void removeSelection(selected);
+        break;
+    }
+  };
+
+  const folderCounts = folder ? totalsById.get(folder.id) : undefined;
+  const homeTotals = useMemo(
+    () =>
+      decks
+        .filter((d) => d.parentId === null)
+        .reduce(
+          (acc, d) => {
+            const c = totalsById.get(d.id);
+            return c
+              ? {
+                  newCount: acc.newCount + c.newCount,
+                  learnCount: acc.learnCount + c.learnCount,
+                  reviewCount: acc.reviewCount + c.reviewCount,
+                }
+              : acc;
+          },
+          { newCount: 0, learnCount: 0, reviewCount: 0 },
+        ),
+    [decks, totalsById],
+  );
+
+  const isCut = (key: string) => clipboard?.op === 'cut' && (clipboard.deckIds.includes(key.slice(2)) || clipboard.noteIds.includes(key.slice(2)));
+
+  return (
+    <>
+      {/* breadcrumb bar */}
+      <div className="crumb-bar" role="navigation" aria-label="Folder path">
+        <button
+          className={`crumb ${folderId === null ? 'crumb-current' : ''} ${dropKey === 'crumb:home' ? 'drop-target' : ''}`}
+          onClick={() => onNavigate(null)}
+          onDragOver={(e) => {
+            if (dragRef.current.deckIds.length === 0 && dragRef.current.noteIds.length === 0) return;
+            e.preventDefault();
+            setDropKey('crumb:home');
+          }}
+          onDragLeave={() => setDropKey((k) => (k === 'crumb:home' ? null : k))}
+          onDrop={(e) => {
+            e.preventDefault();
+            finishDrop(null);
+          }}
+        >
+          <Home size={14} /> Home
+        </button>
+        {crumbs.map((c) => (
+          <span key={c.id} className="crumb-seg">
+            <Crumb size={13} className="crumb-sep" />
+            <button
+              className={`crumb ${c.id === folderId ? 'crumb-current' : ''} ${dropKey === `crumb:${c.id}` ? 'drop-target' : ''}`}
+              onClick={() => onNavigate(c.id)}
+              onDragOver={(e) => {
+                if (!dropAccepts(c.id)) return;
+                e.preventDefault();
+                setDropKey(`crumb:${c.id}`);
+              }}
+              onDragLeave={() => setDropKey((k) => (k === `crumb:${c.id}` ? null : k))}
+              onDrop={(e) => {
+                e.preventDefault();
+                finishDrop(c.id);
+              }}
+            >
+              {c.name}
+            </button>
+          </span>
+        ))}
+        <span className="crumb-totals">
+          {folder && folderCounts ? (
+            <>
+              <span className="count-new">{folderCounts.newCount}</span> ·{' '}
+              <span className="count-learn">{folderCounts.learnCount}</span> ·{' '}
+              <span className="count-due">{folderCounts.reviewCount}</span>
+            </>
+          ) : (
+            <>
+              <span className="count-new">{homeTotals.newCount}</span> ·{' '}
+              <span className="count-learn">{homeTotals.learnCount}</span> ·{' '}
+              <span className="count-due">{homeTotals.reviewCount}</span>
+            </>
+          )}
+        </span>
+        {folder && (
+          <span className="folder-head-actions">
+            <button className="btn btn-sm btn-secondary" onClick={() => onAddHere(folder.id)}>
+              <Plus size={13} /> Add note
+            </button>
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={
+                !folderCounts ||
+                folderCounts.newCount + folderCounts.learnCount + folderCounts.reviewCount === 0
+              }
+              onClick={() => onStudy(folder.id)}
+            >
+              <Play size={13} /> Study
+            </button>
+          </span>
+        )}
+      </div>
+
+      <p className="tooltip-hint manager-hint">
+        Double-click opens a folder · drag onto folders (or the path) to move · box-select on empty space ·
+        Ctrl+X/C/V cut, copy, paste · F2 rename · Del delete · Backspace goes up · right-click for more
+      </p>
+
+      {/* the desktop surface */}
+      <div
+        ref={gridRef}
+        className="card-panel desk-surface"
+        onMouseDown={onGridMouseDown}
+        onContextMenu={(e) => {
+          if ((e.target as HTMLElement).closest('.tile')) return;
+          e.preventDefault();
+          setCtx({ x: e.clientX, y: e.clientY, target: { kind: 'bg' } });
+        }}
+      >
+        <div className="desk-grid">
+          {childFolders.map((d) => {
+            const c = totalsById.get(d.id) ?? { newCount: 0, learnCount: 0, reviewCount: 0 };
+            const key = deckKey(d.id);
+            const hasWork = c.newCount + c.learnCount + c.reviewCount > 0;
+            return (
+              <div
+                key={key}
+                data-key={key}
+                className={`tile deck-tile ${selected.has(key) ? 'tile-selected' : ''} ${isCut(key) ? 'tile-cut' : ''} ${dropKey === key ? 'drop-target' : ''}`}
+                draggable={renamingId !== d.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  selectItem(key, e);
+                }}
+                onDoubleClick={() => onNavigate(d.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openCtx({ kind: 'deck', id: d.id }, e.clientX, e.clientY);
+                }}
+                onDragStart={(e) => startDrag(key, e)}
+                onDragOver={(e) => {
+                  if (!dropAccepts(d.id)) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDropKey(key);
+                }}
+                onDragLeave={() => setDropKey((k) => (k === key ? null : k))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  finishDrop(d.id);
+                }}
+                onDragEnd={() => {
+                  dragRef.current = { deckIds: [], noteIds: [] };
+                  setDropKey(null);
+                }}
+              >
+                <div className="tile-icon">
+                  <Folder size={44} strokeWidth={1.4} />
+                  {hasWork && (
+                    <button
+                      className="tile-play"
+                      title="Study this folder"
+                      aria-label={`Study ${d.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onStudy(d.id);
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                    >
+                      <Play size={13} />
+                    </button>
+                  )}
+                </div>
+                {hasWork ? (
+                  <div className="tile-counts">
+                    <span className="count-new">{c.newCount}</span>
+                    <span className="count-learn">{c.learnCount}</span>
+                    <span className="count-due">{c.reviewCount}</span>
+                  </div>
+                ) : (
+                  <div className="tile-counts tile-counts-empty">—</div>
+                )}
+                {renamingId === d.id ? (
+                  <input
+                    className="input rename-inline tile-rename"
+                    defaultValue={d.name}
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const v = (e.target as HTMLInputElement).value;
+                        if (v.trim() && v.trim() !== d.name) void renameDeck(d.id, v);
+                        setRenamingId(null);
+                      }
+                      if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                    onBlur={(e) => {
+                      const v = e.target.value;
+                      if (v.trim() && v.trim() !== d.name) void renameDeck(d.id, v);
+                      setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <div className="tile-name" title={d.name}>
+                    {d.name}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {shownNotes.map((n) => {
+            const key = noteKey(n.id);
+            return (
+              <NoteTile
+                key={key}
+                note={n}
+                selected={selected.has(key)}
+                cut={isCut(key)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  selectItem(key, e);
+                }}
+                onDoubleClick={() => onEditNote(n.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openCtx({ kind: 'note', id: n.id }, e.clientX, e.clientY);
+                }}
+                onDragStart={(e) => startDrag(key, e)}
+                onDragEnd={() => {
+                  dragRef.current = { deckIds: [], noteIds: [] };
+                  setDropKey(null);
+                }}
+              />
+            );
+          })}
+
+          {childFolders.length === 0 && shownNotes.length === 0 && (
+            <div className="desk-empty">
+              {folder ? 'Empty folder — add a note or create a subfolder.' : 'No decks yet — create one.'}
+            </div>
+          )}
+        </div>
+        {sortedNotes.length > NOTE_TILE_CAP && (
+          <div className="tooltip-hint desk-more">
+            Showing {NOTE_TILE_CAP} of {sortedNotes.length} notes — use Browse to see all.
+          </div>
+        )}
+        {marquee && (
+          <div
+            className="marquee"
+            style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }}
+          />
+        )}
+      </div>
+
+      {ctx && <PopMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx.target)} onAction={onCtxAction} />}
+    </>
+  );
 }
 
-// ---------- row ----------
+// ---------- note tile ----------
 
-function DeckRow({
-  node,
-  manager,
+function noteTitle(note: Note): string {
+  const plain = stripCloze(note.front).replace(/\[img:[a-zA-Z0-9-]+\]/g, '').replace(/\s+/g, ' ').trim();
+  return plain || '(image)';
+}
+
+function NoteTile({
+  note,
   selected,
   cut,
-  dropping,
-  renaming,
-  onStudy,
-  onSelect,
+  onClick,
+  onDoubleClick,
   onContextMenu,
-  onRenamed,
   onDragStart,
-  onDragOverRow,
-  onDragLeaveRow,
-  onDropRow,
   onDragEnd,
 }: {
-  node: DeckTreeNode;
-  manager: boolean;
+  note: Note;
   selected: boolean;
   cut: boolean;
-  dropping: boolean;
-  renaming: boolean;
-  onStudy: (deckId: string) => void;
-  onSelect: (e: React.MouseEvent) => void;
-  onContextMenu: (x: number, y: number) => void;
-  onRenamed: (name: string) => void;
+  onClick: (e: React.MouseEvent) => void;
+  onDoubleClick: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent) => void;
-  onDragOverRow: (e: React.DragEvent) => void;
-  onDragLeaveRow: () => void;
-  onDropRow: (e: React.DragEvent) => void;
   onDragEnd: () => void;
 }) {
-  const { deck, children, depth, totalCounts } = node;
-  const hasWork = totalCounts.newCount + totalCounts.learnCount + totalCounts.reviewCount > 0;
+  const [thumb, setThumb] = useState<string | null>(null);
+  const imgId = mediaIdsIn(note.front)[0] ?? mediaIdsIn(note.back)[0];
+
+  useEffect(() => {
+    let alive = true;
+    if (imgId) {
+      void mediaUrl(imgId).then((u) => alive && setThumb(u));
+    } else {
+      setThumb(null);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [imgId]);
 
   return (
     <div
-      className={`deck-row ${selected ? 'row-selected-deck' : ''} ${cut ? 'row-cut' : ''} ${dropping ? 'drop-target' : ''}`}
-      draggable={manager && !renaming}
-      onClick={(e) => manager && onSelect(e)}
-      onDoubleClick={() => manager && onStudy(deck.id)}
-      onContextMenu={(e) => {
-        if (!manager) return;
-        e.preventDefault();
-        onContextMenu(e.clientX, e.clientY);
-      }}
+      data-key={noteKey(note.id)}
+      className={`tile note-tile ${selected ? 'tile-selected' : ''} ${cut ? 'tile-cut' : ''}`}
+      draggable
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
       onDragStart={onDragStart}
-      onDragOver={onDragOverRow}
-      onDragLeave={onDragLeaveRow}
-      onDrop={onDropRow}
       onDragEnd={onDragEnd}
     >
-      <span className="deck-name-cell" style={{ paddingLeft: depth * 22 }}>
-        {children.length > 0 ? (
-          <button
-            className="icon-btn chevron-btn"
-            aria-label={deck.collapsed ? 'Expand' : 'Collapse'}
-            onClick={(e) => {
-              e.stopPropagation();
-              void db.decks.update(deck.id, { collapsed: deck.collapsed ? 0 : 1 });
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-          >
-            {deck.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-          </button>
+      <div className="tile-icon note-icon">
+        {thumb ? (
+          <img src={thumb} alt="" className="note-thumb" draggable={false} />
+        ) : imgId ? (
+          <ImageIcon size={34} strokeWidth={1.4} />
         ) : (
-          <span className="chevron-spacer" />
+          <FileText size={34} strokeWidth={1.4} />
         )}
-        {renaming ? (
-          <input
-            className="input rename-inline"
-            defaultValue={deck.name}
-            autoFocus
-            onFocus={(e) => e.target.select()}
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') onRenamed((e.target as HTMLInputElement).value);
-              if (e.key === 'Escape') onRenamed(deck.name);
-            }}
-            onBlur={(e) => onRenamed(e.target.value)}
-          />
-        ) : manager ? (
-          <span className="deck-name deck-name-static">{deck.name}</span>
-        ) : (
-          <button className="deck-name" onClick={() => onStudy(deck.id)} title="Study this deck">
-            {deck.name}
-          </button>
-        )}
-      </span>
-      <span className={`deck-count count-new ${totalCounts.newCount ? '' : 'count-zero'}`}>
-        {totalCounts.newCount}
-      </span>
-      <span className={`deck-count count-learn ${totalCounts.learnCount ? '' : 'count-zero'}`}>
-        {totalCounts.learnCount}
-      </span>
-      <span className={`deck-count count-due ${totalCounts.reviewCount ? '' : 'count-zero'}`}>
-        {totalCounts.reviewCount}
-      </span>
-      <span className="deck-actions">
-        {hasWork && (
-          <button
-            className="btn btn-sm btn-primary"
-            onClick={(e) => {
-              e.stopPropagation();
-              onStudy(deck.id);
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-          >
-            <Play size={13} /> Study
-          </button>
-        )}
-        <button
-          className="icon-btn"
-          aria-label={`Options for ${deck.name}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            onContextMenu(rect.left, rect.bottom + 4);
-          }}
-          onDoubleClick={(e) => e.stopPropagation()}
-        >
-          <MoreHorizontal size={17} />
-        </button>
-      </span>
+      </div>
+      <div className="tile-name" title={noteTitle(note)}>
+        {noteTitle(note)}
+      </div>
     </div>
   );
 }
 
-// ---------- context menu ----------
+// ---------- generic popup menu ----------
 
-function ContextMenu({
-  menu,
-  manager,
-  clipboard,
-  selectedCount,
+function PopMenu({
+  x,
+  y,
+  items,
   onAction,
 }: {
-  menu: { x: number; y: number; deckId: string | null };
-  manager: boolean;
-  clipboard: Clipboard;
-  selectedCount: number;
-  onAction: (action: string) => void;
+  x: number;
+  y: number;
+  items: MenuItem[];
+  onAction: (key: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: menu.x, y: menu.y });
+  const [pos, setPos] = useState({ x, y });
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos({
-      x: Math.min(menu.x, window.innerWidth - r.width - 8),
-      y: Math.min(menu.y, window.innerHeight - r.height - 8),
+      x: Math.min(x, window.innerWidth - r.width - 8),
+      y: Math.min(y, window.innerHeight - r.height - 8),
     });
-  }, [menu]);
-
-  const onDeck = menu.deckId != null;
-  const multi = selectedCount > 1;
-
-  const items: { key: string; label: string; icon: React.ReactNode; disabled?: boolean; danger?: boolean }[] = onDeck
-    ? [
-        { key: 'study', label: 'Study', icon: <Play size={15} /> },
-        { key: 'addSub', label: 'Add subdeck', icon: <FolderPlus size={15} /> },
-        { key: 'rename', label: 'Rename', icon: <Pencil size={15} /> },
-        ...(manager
-          ? [
-              { key: 'cut', label: multi ? `Cut ${selectedCount} decks` : 'Cut', icon: <Scissors size={15} /> },
-              { key: 'copy', label: multi ? `Copy ${selectedCount} decks` : 'Copy', icon: <Copy size={15} /> },
-              {
-                key: 'paste',
-                label: 'Paste into this deck',
-                icon: <ClipboardPaste size={15} />,
-                disabled: !clipboard,
-              },
-            ]
-          : []),
-        { key: 'options', label: 'Options', icon: <Settings2 size={15} /> },
-        { key: 'export', label: 'Export', icon: <Download size={15} /> },
-        {
-          key: 'delete',
-          label: multi ? `Delete ${selectedCount} decks` : 'Delete',
-          icon: <Trash2 size={15} />,
-          danger: true,
-        },
-      ]
-    : [
-        { key: 'newDeck', label: 'New deck', icon: <Plus size={15} /> },
-        {
-          key: 'paste',
-          label: 'Paste here (top level)',
-          icon: <ClipboardPaste size={15} />,
-          disabled: !clipboard,
-        },
-      ];
+  }, [x, y]);
 
   return (
-    <div
-      ref={ref}
-      className="ctx-menu anim-in"
-      style={{ left: pos.x, top: pos.y }}
-      role="menu"
-      onContextMenu={(e) => e.preventDefault()}
-    >
+    <div ref={ref} className="ctx-menu anim-in" style={{ left: pos.x, top: pos.y }} role="menu" onContextMenu={(e) => e.preventDefault()}>
       {items.map((it) => (
         <button
           key={it.key}
@@ -728,8 +1016,7 @@ function ContextMenu({
           disabled={it.disabled}
           onClick={(e) => {
             e.stopPropagation();
-            if (it.disabled) return;
-            onAction(it.key);
+            if (!it.disabled) onAction(it.key);
           }}
         >
           {it.icon} {it.label}
@@ -739,7 +1026,163 @@ function ContextMenu({
   );
 }
 
-// ---------- modals ----------
+// ============================================================
+// Simple list mode (the optional toggle)
+// ============================================================
+
+function ListRows({
+  tree,
+  onStudy,
+  onAddSub,
+  onRename,
+  onOptions,
+}: {
+  tree: DeckTreeNode[];
+  onStudy: (deckId: string) => void;
+  onAddSub: (parentId: string) => void;
+  onRename: (deck: Deck) => void;
+  onOptions: (deck: Deck) => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [menu, setMenu] = useState<{ x: number; y: number; deck: Deck } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menu]);
+
+  const rows: DeckTreeNode[] = [];
+  const walk = (n: DeckTreeNode) => {
+    rows.push(n);
+    if (!n.deck.collapsed) n.children.forEach(walk);
+  };
+  tree.forEach(walk);
+
+  const totals = tree.reduce(
+    (acc, n) => ({
+      newCount: acc.newCount + n.totalCounts.newCount,
+      learnCount: acc.learnCount + n.totalCounts.learnCount,
+      reviewCount: acc.reviewCount + n.totalCounts.reviewCount,
+    }),
+    { newCount: 0, learnCount: 0, reviewCount: 0 },
+  );
+
+  const handleDelete = async (deck: Deck) => {
+    const cardCount = await countCardsInSubtree(deck.id);
+    const ok = await confirm({
+      title: `Delete "${deck.name}"?`,
+      message: `This deletes the deck, all its subdecks, and ${cardCount} card${cardCount === 1 ? '' : 's'}. This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await deleteDeckSubtree(deck.id);
+    toast.push('success', `Deleted "${deck.name}".`);
+  };
+
+  const handleExport = async (deck: Deck) => {
+    const decks = await db.decks.toArray();
+    const ids = descendantIds(decks, deck.id);
+    const blob = await exportCollection(ids);
+    downloadBlob(blob, `${deck.name.replace(/[^\w-]+/g, '_')}.ankiai.json`);
+    toast.push('success', 'Deck exported.');
+  };
+
+  return (
+    <div className="card-panel deck-table">
+      <div className="deck-row deck-row-head" aria-hidden="true">
+        <span />
+        <span className="deck-count-head">New</span>
+        <span className="deck-count-head">Learn</span>
+        <span className="deck-count-head">Due</span>
+        <span />
+      </div>
+      {rows.map(({ deck, children, depth, totalCounts }) => (
+        <div className="deck-row" key={deck.id}>
+          <span className="deck-name-cell" style={{ paddingLeft: depth * 22 }}>
+            {children.length > 0 ? (
+              <button
+                className="icon-btn chevron-btn"
+                aria-label={deck.collapsed ? 'Expand' : 'Collapse'}
+                onClick={() => void db.decks.update(deck.id, { collapsed: deck.collapsed ? 0 : 1 })}
+              >
+                {deck.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+              </button>
+            ) : (
+              <span className="chevron-spacer" />
+            )}
+            <button className="deck-name" onClick={() => onStudy(deck.id)} title="Study this deck">
+              {deck.name}
+            </button>
+          </span>
+          <span className={`deck-count count-new ${totalCounts.newCount ? '' : 'count-zero'}`}>
+            {totalCounts.newCount}
+          </span>
+          <span className={`deck-count count-learn ${totalCounts.learnCount ? '' : 'count-zero'}`}>
+            {totalCounts.learnCount}
+          </span>
+          <span className={`deck-count count-due ${totalCounts.reviewCount ? '' : 'count-zero'}`}>
+            {totalCounts.reviewCount}
+          </span>
+          <span className="deck-actions">
+            {totalCounts.newCount + totalCounts.learnCount + totalCounts.reviewCount > 0 && (
+              <button className="btn btn-sm btn-primary" onClick={() => onStudy(deck.id)}>
+                <Play size={13} /> Study
+              </button>
+            )}
+            <button
+              className="icon-btn"
+              aria-label={`Options for ${deck.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setMenu({ x: rect.left, y: rect.bottom + 4, deck });
+              }}
+            >
+              <MoreHorizontal size={17} />
+            </button>
+          </span>
+        </div>
+      ))}
+      <div className="deck-row deck-row-total">
+        <span>Total</span>
+        <span className="deck-count count-new">{totals.newCount}</span>
+        <span className="deck-count count-learn">{totals.learnCount}</span>
+        <span className="deck-count count-due">{totals.reviewCount}</span>
+        <span />
+      </div>
+      {menu && (
+        <PopMenu
+          x={menu.x}
+          y={menu.y}
+          items={[
+            { key: 'addSub', label: 'Add subdeck', icon: <FolderPlus size={15} /> },
+            { key: 'rename', label: 'Rename', icon: <Pencil size={15} /> },
+            { key: 'options', label: 'Options', icon: <Settings2 size={15} /> },
+            { key: 'export', label: 'Export', icon: <Download size={15} /> },
+            { key: 'delete', label: 'Delete', icon: <Trash2 size={15} />, danger: true },
+          ]}
+          onAction={(key) => {
+            const deck = menu.deck;
+            setMenu(null);
+            if (key === 'addSub') onAddSub(deck.id);
+            if (key === 'rename') onRename(deck);
+            if (key === 'options') onOptions(deck);
+            if (key === 'export') void handleExport(deck);
+            if (key === 'delete') void handleDelete(deck);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// modals
+// ============================================================
 
 function RenameModal({
   deck,
@@ -786,10 +1229,10 @@ function AddDeckModal({
   const [name, setName] = useState('');
   const parent = parentId ? decks.find((d) => d.id === parentId) : null;
   return (
-    <Modal title={parent ? `New subdeck of "${parent.name}"` : 'New deck'} onClose={onClose}>
+    <Modal title={parent ? `New folder inside "${parent.name}"` : 'New folder'} onClose={onClose}>
       <input
         className="input"
-        placeholder="Deck name"
+        placeholder="Folder name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && name.trim() && onCreate(name.trim())}

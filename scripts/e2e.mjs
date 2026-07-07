@@ -78,13 +78,14 @@ try {
   await waitForText(page, 'Default');
   ok('app loads with Default deck');
 
-  // 2. Create a deck + subdeck
-  await clickByText(page, 'button', 'New deck');
+  // 2. Create a folder on the desktop
+  await clickByText(page, 'button', 'New folder');
   await page.waitForSelector('.modal-panel input');
   await page.type('.modal-panel input', 'Biology');
   await clickByText(page, '.modal-panel button', 'Create');
+  await page.waitForSelector('.deck-tile');
   await waitForText(page, 'Biology');
-  ok('deck created');
+  ok('folder created as desktop tile');
 
   // 3. Add a basic note
   await clickByText(page, '.nav-item', 'Add');
@@ -133,18 +134,20 @@ try {
   await waitForText(page, 'Added — 1 card created');
   ok('image note added');
 
-  // 5. Deck list shows due counts
+  // 5. Desktop tile shows due counts
   await clickByText(page, '.nav-item', 'Decks');
   await waitForText(page, 'Biology');
   await sleep(400);
-  const bioRow = await page.evaluate(() => {
-    const row = [...document.querySelectorAll('.deck-row')].find((r) => r.textContent.includes('Biology'));
-    return row ? row.querySelector('.count-new').textContent : null;
+  const bioTileNew = await page.evaluate(() => {
+    const tile = [...document.querySelectorAll('.deck-tile')].find((t) => t.textContent.includes('Biology'));
+    return tile ? tile.querySelector('.count-new')?.textContent : null;
   });
-  if (bioRow === '2') ok('deck tree shows 2 new cards'); else fail('deck counts', `expected 2, got ${bioRow}`);
+  if (bioTileNew === '2') ok('folder tile shows 2 new cards'); else fail('tile counts', `expected 2, got ${bioTileNew}`);
 
-  // 6. Study: double-click deck (manager mode) → classic flip + rate Good
-  await clickByText(page, '.deck-name', 'Biology', { count: 2 });
+  // 6. Study: double-click opens the folder, Study button starts the session
+  await clickByText(page, '.deck-tile', 'Biology', { count: 2 });
+  await page.waitForSelector('.folder-head-actions');
+  await clickByText(page, '.folder-head-actions button', 'Study');
   await page.waitForSelector('.study-card');
   await clickByText(page, '.mode-toggle button', 'Classic');
   await clickByText(page, 'button', 'Show answer');
@@ -276,7 +279,11 @@ try {
   ok('cloze note → 2 cards');
   await clickByText(page, '.nav-item', 'Decks');
   await sleep(300);
-  await clickByText(page, '.deck-name', 'Default', { count: 2 });
+  await clickByText(page, '.crumb', 'Home').catch(() => {});
+  await sleep(200);
+  await clickByText(page, '.deck-tile', 'Default', { count: 2 });
+  await page.waitForSelector('.folder-head-actions');
+  await clickByText(page, '.folder-head-actions button', 'Study');
   await page.waitForSelector('.study-card');
   const q = await page.$eval('.study-question', (e) => e.textContent);
   if (q.includes('...') && q.includes('cell')) ok(`cloze front renders: "${q.trim().slice(0, 60)}"`); else fail('cloze front', q);
@@ -294,33 +301,36 @@ try {
   const aiErr = await page.$eval('.ai-error', (e) => e.textContent);
   ok(`AI grade path returns actionable error without valid key: "${aiErr.slice(0, 60)}"`);
 
-  // 16. File-manager mode: cut/paste via keyboard moves Biology under Default
+  // 16. Desktop: cut a tile at Home, open Default, paste inside it
   await clickByText(page, '.nav-item', 'Decks');
   await sleep(400);
-  await clickByText(page, '.deck-name', 'Biology'); // single click = select
+  await clickByText(page, '.crumb', 'Home');
+  await sleep(300);
+  await clickByText(page, '.deck-tile', 'Biology'); // single click = select
   await pressWithCtrl(page, 'x');
   await sleep(150);
   const cutDim = await page.evaluate(
-    () => !![...document.querySelectorAll('.deck-row.row-cut')].find((r) => r.textContent.includes('Biology')),
+    () => !![...document.querySelectorAll('.deck-tile.tile-cut')].find((t) => t.textContent.includes('Biology')),
   );
-  if (cutDim) ok('Ctrl+X marks deck as cut'); else fail('cut visual', 'row not dimmed');
-  await clickByText(page, '.deck-name', 'Default');
-  await pressWithCtrl(page, 'v');
+  if (cutDim) ok('Ctrl+X dims the cut tile'); else fail('cut visual', 'tile not dimmed');
+  await clickByText(page, '.deck-tile', 'Default', { count: 2 }); // enter folder
+  await sleep(300);
+  await pressWithCtrl(page, 'v'); // paste into current folder
   await sleep(500);
   let d = await dumpDecks(page);
   {
     const bio = d.decks.find((x) => x.name === 'Biology');
     const def = d.decks.find((x) => x.name === 'Default');
-    if (bio.parentId === def.id) ok('cut/paste moved Biology under Default');
+    if (bio.parentId === def.id) ok('cut/paste moved Biology inside Default');
     else fail('cut/paste', `Biology.parentId=${bio.parentId}, Default.id=${def.id}`);
   }
 
-  // 17. Copy/paste to root deep-clones the subtree including cards
+  // 17. Copy inside a folder, paste at Home → deep clone with cards
   const cardsBefore = d.cards.length;
-  await clickByText(page, '.deck-name', 'Biology');
+  await clickByText(page, '.deck-tile', 'Biology');
   await pressWithCtrl(page, 'c');
-  await page.click('.deck-table', { offset: { x: 400, y: 10 } }); // background click clears selection
-  await sleep(150);
+  await clickByText(page, '.crumb', 'Home');
+  await sleep(300);
   await pressWithCtrl(page, 'v');
   await sleep(600);
   d = await dumpDecks(page);
@@ -329,21 +339,18 @@ try {
     const rootBio = bios.find((x) => x.parentId === null);
     const clonedCards = rootBio ? d.cards.filter((c) => c.deckId === rootBio.id).length : 0;
     if (rootBio && d.cards.length === cardsBefore + 2 && clonedCards === 2) {
-      ok('copy/paste cloned Biology to root with its 2 cards');
+      ok('copy/paste cloned the folder to Home with its 2 cards');
     } else {
       fail('copy/paste', `rootBio=${!!rootBio}, cards ${cardsBefore}→${d.cards.length}, cloned=${clonedCards}`);
     }
   }
 
-  // 18. Drag & drop: drag the cloned root Biology onto Default
+  // 18. Drag & drop a tile onto a folder tile
   const dndResult = await page.evaluate(() => {
-    const rows = [...document.querySelectorAll('.deck-row')];
-    // the root-level clone renders un-indented (paddingLeft 0)
-    const src = rows.find(
-      (r) => r.textContent.includes('Biology') && r.querySelector('.deck-name-cell')?.style.paddingLeft === '0px',
-    );
-    const dst = rows.find((r) => r.textContent.includes('Default'));
-    if (!src || !dst) return 'rows not found';
+    const tiles = [...document.querySelectorAll('.deck-tile')];
+    const src = tiles.find((t) => t.textContent.includes('Biology'));
+    const dst = tiles.find((t) => t.textContent.includes('Default'));
+    if (!src || !dst) return 'tiles not found';
     const dt = new DataTransfer();
     src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
     dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
@@ -356,38 +363,55 @@ try {
   {
     const def = d.decks.find((x) => x.name === 'Default');
     const biosUnderDefault = d.decks.filter((x) => x.name === 'Biology' && x.parentId === def.id).length;
-    if (dndResult === 'ok' && biosUnderDefault === 2) ok('drag & drop moved cloned deck under Default');
+    if (dndResult === 'ok' && biosUnderDefault === 2) ok('drag & drop moved the tile into Default');
     else fail('drag & drop', `dispatch=${dndResult}, under Default=${biosUnderDefault}`);
   }
 
-  // 19. Right-click context menu shows file operations
+  // 19. Right-click context menu on a folder tile
   await page.evaluate(() => {
-    const row = [...document.querySelectorAll('.deck-row')].find((r) => r.textContent.includes('Default'));
-    const rect = row.getBoundingClientRect();
-    row.dispatchEvent(
-      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 60, clientY: rect.top + 10 }),
+    const tile = [...document.querySelectorAll('.deck-tile')].find((t) => t.textContent.includes('Default'));
+    const rect = tile.getBoundingClientRect();
+    tile.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 30, clientY: rect.top + 20 }),
     );
   });
   await page.waitForSelector('.ctx-menu');
   const menuItems = await page.$$eval('.ctx-menu button', (bs) => bs.map((b) => b.textContent.trim()));
-  if (menuItems.some((t) => t.includes('Cut')) && menuItems.some((t) => t.includes('Paste'))) {
+  if (menuItems.some((t) => t.includes('Cut')) && menuItems.some((t) => t.includes('Paste into folder'))) {
     ok('right-click context menu with Cut/Copy/Paste');
   } else fail('context menu', JSON.stringify(menuItems));
   await page.keyboard.press('Escape');
   await sleep(150);
 
-  // 20. Simple mode toggle: single click studies, then back to manager
-  await clickByText(page, '.seg-control button', 'Simple');
+  // 20. Notes appear as file tiles inside their folder; double-click edits
+  await clickByText(page, '.deck-tile', 'Default', { count: 2 });
   await sleep(300);
-  await clickByText(page, '.deck-name', 'Default'); // single click = study in simple mode
+  await clickByText(page, '.deck-tile', 'Biology', { count: 2 });
+  await sleep(400);
+  const noteTiles = await page.$$eval('.note-tile', (ts) => ts.length);
+  if (noteTiles === 2) ok('2 notes shown as file tiles inside the folder');
+  else fail('note tiles', `expected 2, got ${noteTiles}`);
+  await page.evaluate(() => {
+    const t = document.querySelector('.note-tile');
+    t.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  });
+  await waitForText(page, 'Edit note');
+  ok('double-click on a note tile opens the editor');
+  await page.keyboard.press('Escape');
+  await sleep(200);
+
+  // 21. List mode toggle: single click studies, then back to desktop
+  await clickByText(page, '.seg-control button', 'List');
+  await sleep(300);
+  await clickByText(page, '.deck-name', 'Default'); // single click = study in list mode
   await sleep(600);
   const inStudy = await page.evaluate(
     () => !!document.querySelector('.study-card') || document.body.innerText.includes('Congratulations') || document.body.innerText.includes('Short break'),
   );
-  if (inStudy) ok('simple mode: single click enters study'); else fail('simple mode', 'did not enter study');
+  if (inStudy) ok('list mode: single click enters study'); else fail('list mode', 'did not enter study');
   await clickByText(page, '.nav-item', 'Decks');
   await sleep(200);
-  await clickByText(page, '.seg-control button', 'Manager');
+  await clickByText(page, '.seg-control button', 'Desktop');
   await sleep(200);
 
   console.log('\nPage JS errors:', errors.length ? errors : 'none');

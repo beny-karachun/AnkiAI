@@ -109,6 +109,42 @@ export async function moveCardsToDeck(cardIds: string[], deckId: string): Promis
   });
 }
 
+/** Move whole notes (and all their cards) to another deck. */
+export async function moveNotes(noteIds: string[], deckId: string): Promise<void> {
+  await db.transaction('rw', db.notes, db.cards, async () => {
+    for (const id of noteIds) {
+      await db.notes.update(id, { deckId });
+      const cards = await db.cards.where('noteId').equals(id).toArray();
+      await db.cards.bulkPut(cards.map((c) => ({ ...c, deckId })));
+    }
+  });
+}
+
+/** Duplicate notes (and their cards, scheduling preserved) into a deck. */
+export async function duplicateNotes(noteIds: string[], targetDeckId: string): Promise<number> {
+  let n = 0;
+  const now = Date.now();
+  await db.transaction('rw', db.notes, db.cards, async () => {
+    for (const id of noteIds) {
+      const note = await db.notes.get(id);
+      if (!note) continue;
+      const newId = uid();
+      await db.notes.add({
+        ...note,
+        id: newId,
+        deckId: targetDeckId,
+        tags: [...note.tags],
+        createdAt: now,
+        updatedAt: now,
+      });
+      const cards = await db.cards.where('noteId').equals(id).toArray();
+      await db.cards.bulkAdd(cards.map((c) => ({ ...c, id: uid(), noteId: newId, deckId: targetDeckId })));
+      n++;
+    }
+  });
+  return n;
+}
+
 /** Non-blocking duplicate check: same type + same first field (trimmed). */
 export async function findDuplicate(type: NoteType, front: string, excludeNoteId?: string): Promise<Note | undefined> {
   const target = front.trim();

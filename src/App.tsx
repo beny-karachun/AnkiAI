@@ -43,10 +43,16 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastDeckId, setLastDeckId] = useState<string>('');
+  /** current folder open on the Decks desktop (null = Home) */
+  const [deckFolderId, setDeckFolderId] = useState<string | null>(null);
 
   const reloadSettings = useCallback(async () => {
     const s = await getSettings();
     if (!s.model) s.model = DEFAULT_MODEL;
+    // migrate legacy mode names from earlier builds
+    const legacy = s.deckViewMode as string;
+    if (legacy === 'manager') s.deckViewMode = 'desktop';
+    if (legacy === 'simple') s.deckViewMode = 'list';
     setSettings(s);
   }, []);
 
@@ -114,9 +120,15 @@ export default function App() {
               setLastDeckId(deckId);
               setView({ name: 'study', deckId });
             }}
+            onAddHere={(deckId) => {
+              setLastDeckId(deckId);
+              setView({ name: 'add' });
+            }}
             settings={settings}
             refreshKey={refreshKey}
             onSettingsChanged={() => void reloadSettings()}
+            folderId={deckFolderId}
+            onNavigate={setDeckFolderId}
           />
         )}
         {view.name === 'study' && (

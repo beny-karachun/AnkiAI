@@ -279,6 +279,214 @@
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
+/* ---------- deck desktop (icon grid) mode ---------- */
+
+.crumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  min-height: 36px;
+}
+
+.crumb-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.crumb-sep {
+  color: var(--color-fg-faint);
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-fg-muted);
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.crumb:hover {
+  background: var(--color-surface-2);
+  color: var(--color-fg);
+}
+
+.crumb-current {
+  color: var(--color-fg);
+}
+
+.crumb.drop-target {
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.crumb-totals {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg-faint);
+}
+
+.folder-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.desk-surface {
+  position: relative;
+  padding: 18px;
+  min-height: 380px;
+  user-select: none;
+}
+
+.desk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 6px;
+  align-content: start;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 6px 10px;
+  border-radius: var(--radius-md);
+  border: 2px solid transparent;
+  cursor: default;
+  text-align: center;
+  transition: background 120ms ease, border-color 120ms ease, opacity 150ms ease;
+}
+
+.tile:hover {
+  background: var(--color-surface-2);
+}
+
+.tile-selected,
+.tile-selected:hover {
+  background: var(--color-primary-soft);
+}
+
+.tile-cut {
+  opacity: 0.45;
+}
+
+.tile.drop-target {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.tile-icon {
+  position: relative;
+  color: var(--color-primary);
+  display: grid;
+  place-items: center;
+  height: 52px;
+}
+
+.note-icon {
+  color: var(--color-fg-muted);
+}
+
+.tile-play {
+  position: absolute;
+  right: -10px;
+  bottom: -2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.tile:hover .tile-play,
+.tile-play:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.tile-counts {
+  display: flex;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.tile-counts-empty {
+  color: var(--color-fg-faint);
+  opacity: 0.5;
+  font-weight: 500;
+}
+
+.tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: break-word;
+}
+
+.note-tile .tile-name {
+  font-weight: 500;
+  color: var(--color-fg-muted);
+}
+
+.note-thumb {
+  width: 62px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 7px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tile-rename {
+  max-width: 110px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.marquee {
+  position: absolute;
+  border: 1px solid var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.desk-empty {
+  grid-column: 1 / -1;
+  padding: 60px 0;
+  text-align: center;
+  color: var(--color-fg-faint);
+  font-size: 14px;
+}
+
+.desk-more {
+  padding: 10px 4px 0;
+}
+
 /* ---------- deck file-manager mode ---------- */
 
 .decks-toolbar {

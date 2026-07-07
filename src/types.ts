@@ -142,8 +142,8 @@ export interface Settings {
   defaultStudyMode: 'classic' | 'ai';
   /** hour of day when the "day" rolls over (Anki default 4am) */
   dayStartHour: number;
-  /** decks page behavior: file-manager (select/drag/copy-paste) or simple list */
-  deckViewMode: 'manager' | 'simple';
+  /** decks page behavior: desktop-style icon grid or simple list */
+  deckViewMode: 'desktop' | 'list';
   lastDeckId?: string;
 }
 
@@ -155,7 +155,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aiStrictness: 'moderate',
   defaultStudyMode: 'ai',
   dayStartHour: 4,
-  deckViewMode: 'manager',
+  deckViewMode: 'desktop',
 };
 
 // ---------- AI grading ----------
