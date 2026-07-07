@@ -1,7 +1,7 @@
 import { db, uid } from '../db';
-import type { Deck, DeckConfig, DeckTreeNode, StudyCounts } from '../types';
+import type { CardRecord, Deck, DeckConfig, DeckTreeNode, Note, StudyCounts } from '../types';
 import { DEFAULT_DECK_CONFIG } from '../types';
-import { descendantIds } from './scheduler';
+import { descendantIds, isDescendant } from './scheduler';
 import { pruneOrphanMedia } from './media';
 
 export async function createDeck(name: string, parentId: string | null): Promise<Deck> {
@@ -32,8 +32,81 @@ export async function setDeckConfig(deckId: string, config: DeckConfig, applyToS
   });
 }
 
-export async function moveDeck(deckId: string, newParentId: string | null): Promise<void> {
+/**
+ * Move a deck under a new parent. Returns false (and does nothing) when the
+ * move would create a cycle (target inside the moved deck) or is a no-op.
+ */
+export async function moveDeck(deckId: string, newParentId: string | null): Promise<boolean> {
+  const decks = await db.decks.toArray();
+  const deck = decks.find((d) => d.id === deckId);
+  if (!deck || deckId === newParentId || deck.parentId === newParentId) return false;
+  if (newParentId && isDescendant(decks, newParentId, deckId)) return false;
   await db.decks.update(deckId, { parentId: newParentId });
+  return true;
+}
+
+function uniqueSiblingName(decks: Deck[], parentId: string | null, base: string): string {
+  const siblings = new Set(decks.filter((d) => d.parentId === parentId).map((d) => d.name));
+  if (!siblings.has(base)) return base;
+  let name = `${base} copy`;
+  let n = 2;
+  while (siblings.has(name)) name = `${base} copy ${n++}`;
+  return name;
+}
+
+/**
+ * Deep-copy a deck subtree: decks, notes, and cards get new ids (scheduling
+ * state is preserved); review history stays with the originals; images are
+ * shared by reference. Returns the new root deck id.
+ */
+export async function copyDeckSubtree(deckId: string, newParentId: string | null): Promise<string> {
+  const decks = await db.decks.toArray();
+  const ids = descendantIds(decks, deckId); // tree order: parents before children
+  const byId = new Map(decks.map((d) => [d.id, d]));
+  const inSubtree = new Set(ids);
+  const idMap = new Map<string, string>();
+  const now = Date.now();
+
+  const newDecks: Deck[] = ids.map((id) => {
+    const src = byId.get(id)!;
+    const nid = uid();
+    idMap.set(id, nid);
+    return {
+      ...src,
+      id: nid,
+      parentId: id === deckId ? newParentId : idMap.get(src.parentId!)!,
+      name: id === deckId ? uniqueSiblingName(decks, newParentId, src.name) : src.name,
+      config: { ...src.config },
+      createdAt: now,
+    };
+  });
+
+  const newNotes: Note[] = [];
+  const newCards: CardRecord[] = [];
+  for (const id of ids) {
+    const notes = await db.notes.where('deckId').equals(id).toArray();
+    for (const n of notes) {
+      const noteId = uid();
+      newNotes.push({ ...n, id: noteId, deckId: idMap.get(n.deckId)!, tags: [...n.tags] });
+      const cards = await db.cards.where('noteId').equals(n.id).toArray();
+      for (const c of cards) {
+        newCards.push({
+          ...c,
+          id: uid(),
+          noteId,
+          // cards moved outside the subtree follow the cloned note's deck
+          deckId: inSubtree.has(c.deckId) ? idMap.get(c.deckId)! : idMap.get(n.deckId)!,
+        });
+      }
+    }
+  }
+
+  await db.transaction('rw', db.decks, db.notes, db.cards, async () => {
+    await db.decks.bulkAdd(newDecks);
+    await db.notes.bulkAdd(newNotes);
+    await db.cards.bulkAdd(newCards);
+  });
+  return idMap.get(deckId)!;
 }
 
 /** Delete a deck, all its subdecks, and every note/card inside. Returns card count deleted. */
@@ -58,6 +131,17 @@ export async function deleteDeckSubtree(deckId: string): Promise<number> {
     for (const nid of orphanNotes) {
       const count = await db.cards.where('noteId').equals(nid).count();
       if (count === 0) await db.notes.delete(nid);
+    }
+    // never leave the app without a deck
+    if ((await db.decks.count()) === 0) {
+      await db.decks.add({
+        id: uid(),
+        name: 'Default',
+        parentId: null,
+        config: { ...DEFAULT_DECK_CONFIG },
+        collapsed: 0,
+        createdAt: Date.now(),
+      });
     }
   });
   pruneOrphanMedia().catch(() => {});

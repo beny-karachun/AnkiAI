@@ -28,7 +28,7 @@ The key is stored only in this browser's database and is sent only to `generativ
 ## Features
 
 - **Scheduling: FSRS-6** (the algorithm modern Anki uses) via `ts-fsrs` — learning steps (default 1m → 10m), relearning steps, per-deck daily new/review limits, desired-retention slider, 4 AM day rollover (configurable), learn-ahead, leech detection (auto-suspend + `leech` tag), exact interval previews on the answer buttons.
-- **Deck folders** — nested decks with due-count rollup, study a parent to study its whole subtree, per-deck options (optionally applied to all subdecks), rename/move/export/delete.
+- **Deck folders with a file-manager UI (default)** — the Decks page works like a file explorer: click to select (Ctrl/Shift multi-select), double-click or Enter to study, **drag & drop** decks into/out of folders, **Ctrl+X/C/V** cut, copy, and paste (copy deep-clones a subtree with its notes and cards; review history stays with the original), F2 inline rename, Del to delete, right-click context menu, Esc to clear. A **Simple** toggle switches back to a plain list where clicking a deck studies it. Due counts roll up through folders, studying a parent studies the whole subtree, and per-deck options can apply to all subdecks.
 - **Note types** — Basic, Basic + reversed, Cloze (`{{c1::text}}` / `{{c1::text::hint}}`, one card per cloze index, editor button or Ctrl+Shift+C).
 - **Screenshots as content** — paste or drag images into any field; they're compressed to WebP, stored locally, rendered on cards, and sent to the AI as part of the card when grading.
 - **Study** — classic flip mode or AI mode; keyboard-first (Space/Enter flip, 1–4 rate, U undo, E edit, `-` bury, `@` suspend, Ctrl+1–4 flags, `?` help); edit-during-review; multi-step undo.

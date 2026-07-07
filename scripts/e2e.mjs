@@ -9,7 +9,7 @@ const fail = (name, err) => { results.push(['FAIL', name + ' :: ' + err]); conso
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function clickByText(page, selector, text) {
+async function clickByText(page, selector, text, opts) {
   const handle = await page.evaluateHandle(
     (sel, t) => [...document.querySelectorAll(sel)].find((el) => el.textContent.trim().includes(t)),
     selector,
@@ -17,8 +17,38 @@ async function clickByText(page, selector, text) {
   );
   const el = handle.asElement();
   if (!el) throw new Error(`no ${selector} containing "${text}"`);
-  await el.click();
+  await el.click(opts);
   return el;
+}
+
+async function pressWithCtrl(page, key) {
+  await page.keyboard.down('Control');
+  await page.keyboard.press(key);
+  await page.keyboard.up('Control');
+}
+
+async function dumpDecks(page) {
+  return page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const req = indexedDB.open('ankiai');
+        req.onsuccess = () => {
+          const idb = req.result;
+          const tx = idb.transaction(['decks', 'cards'], 'readonly');
+          const out = {};
+          tx.objectStore('decks').getAll().onsuccess = (e) => {
+            out.decks = e.target.result.map((d) => ({ id: d.id, name: d.name, parentId: d.parentId }));
+          };
+          tx.objectStore('cards').getAll().onsuccess = (e) => {
+            out.cards = e.target.result.map((c) => ({ deckId: c.deckId }));
+          };
+          tx.oncomplete = () => {
+            idb.close();
+            resolve(out);
+          };
+        };
+      }),
+  );
 }
 
 async function waitForText(page, text, timeout = 8000) {
@@ -113,8 +143,8 @@ try {
   });
   if (bioRow === '2') ok('deck tree shows 2 new cards'); else fail('deck counts', `expected 2, got ${bioRow}`);
 
-  // 6. Study: classic flip + rate Good
-  await clickByText(page, '.deck-name', 'Biology');
+  // 6. Study: double-click deck (manager mode) → classic flip + rate Good
+  await clickByText(page, '.deck-name', 'Biology', { count: 2 });
   await page.waitForSelector('.study-card');
   await clickByText(page, '.mode-toggle button', 'Classic');
   await clickByText(page, 'button', 'Show answer');
@@ -246,7 +276,7 @@ try {
   ok('cloze note → 2 cards');
   await clickByText(page, '.nav-item', 'Decks');
   await sleep(300);
-  await clickByText(page, '.deck-name', 'Default');
+  await clickByText(page, '.deck-name', 'Default', { count: 2 });
   await page.waitForSelector('.study-card');
   const q = await page.$eval('.study-question', (e) => e.textContent);
   if (q.includes('...') && q.includes('cell')) ok(`cloze front renders: "${q.trim().slice(0, 60)}"`); else fail('cloze front', q);
@@ -263,6 +293,102 @@ try {
   );
   const aiErr = await page.$eval('.ai-error', (e) => e.textContent);
   ok(`AI grade path returns actionable error without valid key: "${aiErr.slice(0, 60)}"`);
+
+  // 16. File-manager mode: cut/paste via keyboard moves Biology under Default
+  await clickByText(page, '.nav-item', 'Decks');
+  await sleep(400);
+  await clickByText(page, '.deck-name', 'Biology'); // single click = select
+  await pressWithCtrl(page, 'x');
+  await sleep(150);
+  const cutDim = await page.evaluate(
+    () => !![...document.querySelectorAll('.deck-row.row-cut')].find((r) => r.textContent.includes('Biology')),
+  );
+  if (cutDim) ok('Ctrl+X marks deck as cut'); else fail('cut visual', 'row not dimmed');
+  await clickByText(page, '.deck-name', 'Default');
+  await pressWithCtrl(page, 'v');
+  await sleep(500);
+  let d = await dumpDecks(page);
+  {
+    const bio = d.decks.find((x) => x.name === 'Biology');
+    const def = d.decks.find((x) => x.name === 'Default');
+    if (bio.parentId === def.id) ok('cut/paste moved Biology under Default');
+    else fail('cut/paste', `Biology.parentId=${bio.parentId}, Default.id=${def.id}`);
+  }
+
+  // 17. Copy/paste to root deep-clones the subtree including cards
+  const cardsBefore = d.cards.length;
+  await clickByText(page, '.deck-name', 'Biology');
+  await pressWithCtrl(page, 'c');
+  await page.click('.deck-table', { offset: { x: 400, y: 10 } }); // background click clears selection
+  await sleep(150);
+  await pressWithCtrl(page, 'v');
+  await sleep(600);
+  d = await dumpDecks(page);
+  {
+    const bios = d.decks.filter((x) => x.name === 'Biology');
+    const rootBio = bios.find((x) => x.parentId === null);
+    const clonedCards = rootBio ? d.cards.filter((c) => c.deckId === rootBio.id).length : 0;
+    if (rootBio && d.cards.length === cardsBefore + 2 && clonedCards === 2) {
+      ok('copy/paste cloned Biology to root with its 2 cards');
+    } else {
+      fail('copy/paste', `rootBio=${!!rootBio}, cards ${cardsBefore}→${d.cards.length}, cloned=${clonedCards}`);
+    }
+  }
+
+  // 18. Drag & drop: drag the cloned root Biology onto Default
+  const dndResult = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.deck-row')];
+    // the root-level clone renders un-indented (paddingLeft 0)
+    const src = rows.find(
+      (r) => r.textContent.includes('Biology') && r.querySelector('.deck-name-cell')?.style.paddingLeft === '0px',
+    );
+    const dst = rows.find((r) => r.textContent.includes('Default'));
+    if (!src || !dst) return 'rows not found';
+    const dt = new DataTransfer();
+    src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    src.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return 'ok';
+  });
+  await sleep(500);
+  d = await dumpDecks(page);
+  {
+    const def = d.decks.find((x) => x.name === 'Default');
+    const biosUnderDefault = d.decks.filter((x) => x.name === 'Biology' && x.parentId === def.id).length;
+    if (dndResult === 'ok' && biosUnderDefault === 2) ok('drag & drop moved cloned deck under Default');
+    else fail('drag & drop', `dispatch=${dndResult}, under Default=${biosUnderDefault}`);
+  }
+
+  // 19. Right-click context menu shows file operations
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.deck-row')].find((r) => r.textContent.includes('Default'));
+    const rect = row.getBoundingClientRect();
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 60, clientY: rect.top + 10 }),
+    );
+  });
+  await page.waitForSelector('.ctx-menu');
+  const menuItems = await page.$$eval('.ctx-menu button', (bs) => bs.map((b) => b.textContent.trim()));
+  if (menuItems.some((t) => t.includes('Cut')) && menuItems.some((t) => t.includes('Paste'))) {
+    ok('right-click context menu with Cut/Copy/Paste');
+  } else fail('context menu', JSON.stringify(menuItems));
+  await page.keyboard.press('Escape');
+  await sleep(150);
+
+  // 20. Simple mode toggle: single click studies, then back to manager
+  await clickByText(page, '.seg-control button', 'Simple');
+  await sleep(300);
+  await clickByText(page, '.deck-name', 'Default'); // single click = study in simple mode
+  await sleep(600);
+  const inStudy = await page.evaluate(
+    () => !!document.querySelector('.study-card') || document.body.innerText.includes('Congratulations') || document.body.innerText.includes('Short break'),
+  );
+  if (inStudy) ok('simple mode: single click enters study'); else fail('simple mode', 'did not enter study');
+  await clickByText(page, '.nav-item', 'Decks');
+  await sleep(200);
+  await clickByText(page, '.seg-control button', 'Manager');
+  await sleep(200);
 
   console.log('\nPage JS errors:', errors.length ? errors : 'none');
   const failed = results.filter(([s]) => s === 'FAIL');

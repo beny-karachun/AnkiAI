@@ -114,8 +114,9 @@ export default function App() {
               setLastDeckId(deckId);
               setView({ name: 'study', deckId });
             }}
-            dayStartHour={settings.dayStartHour}
+            settings={settings}
             refreshKey={refreshKey}
+            onSettingsChanged={() => void reloadSettings()}
           />
         )}
         {view.name === 'study' && (
