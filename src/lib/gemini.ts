@@ -164,8 +164,8 @@ async function geminiJson(
 
 // ---------- AI note creation from uploaded material ----------
 
-/** Deep-reading model used by default when generating notes from a document. */
-export const AI_NOTES_DEFAULT_MODEL = 'gemini-3.5-flash#thinking';
+/** Model used by default when generating notes from a document. */
+export const AI_NOTES_DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 
 export interface GeneratedNote {
   type: 'basic' | 'cloze';
